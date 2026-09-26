@@ -138,9 +138,11 @@ def query(request: QueryRequest, backend: str | None = None) -> dict:
     from config import settings
     import os
 
+    import re
     q_lower = request.query.lower()
-    math_keywords = ["average", "mean", "sum", "calculate", "count", "plot", "how many", "total", "max", "min"]
-    if any(k in q_lower for k in math_keywords):
+    math_keywords = {"average", "mean", "sum", "calculate", "count", "plot", "how many", "total", "max", "min"}
+    q_words = set(re.findall(r'\b\w+\b', q_lower))
+    if any(k in q_words for k in math_keywords) or "how many" in q_lower:
         if settings.documents_dir.exists():
             csv_files = [str(settings.documents_dir / f) for f in os.listdir(settings.documents_dir) if f.endswith(".csv")]
             if csv_files:

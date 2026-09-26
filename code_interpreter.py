@@ -10,7 +10,8 @@ from config import settings
 def run_code_interpreter(query: str, csv_paths: list[str]) -> str:
     dfs_info = ""
     for idx, path in enumerate(csv_paths):
-        dfs_info += f"df_{idx} = pd.read_csv('{path.replace(chr(92), '/')}')\n"
+        safe_path = path.replace(chr(92), '/')
+        dfs_info += f"df_{idx} = pd.read_csv(r\"\"\"{safe_path}\"\"\")\n"
 
     prompt = f"""You are a Python Data Analyst. 
 The user wants to know: "{query}"
