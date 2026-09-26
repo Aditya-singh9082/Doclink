@@ -156,11 +156,16 @@ def _extract_pdf(path: Path, warnings: list[str]) -> list[Extracted]:
 
             if not text:
                 continue
-            for chunk in chunk_text(text):
+            for chunk_idx, chunk in enumerate(chunk_text(text), start=1):
                 out.append((
                     chunk,
                     SourceLocation(page_number=page_index),
-                    {"ocr_used": ocr_used},
+                    {
+                        "page": page_index,
+                        "page_number": page_index,
+                        "chunk_in_page": chunk_idx,
+                        "ocr_used": ocr_used,
+                    },
                 ))
     return out
 
@@ -185,28 +190,45 @@ def _ocr_pdf_page(page, warnings: list[str], page_index: int) -> str:
 
 
 def _extract_docx(path: Path, warnings: list[str]) -> list[Extracted]:
-    """python-docx cannot know page boundaries -- pagination is computed by
-    the renderer, not stored in the file -- so DOCX items carry a section
-    heading and never a page_number."""
+    """Extract paragraphs and tables from DOCX. Estimates page numbers (~400 words
+    per page) and keeps section headings so chunks carry both page and section."""
     import docx
 
     document = docx.Document(str(path))
     out: list[Extracted] = []
     current_section = "Document body"
+    current_page = 1
+    page_words = 0
     buffer: list[str] = []
 
     def flush() -> None:
+        nonlocal page_words, current_page
         if not buffer:
             return
         joined = " ".join(buffer)
         for chunk in chunk_text(joined):
-            out.append((chunk, SourceLocation(section=current_section), {}))
+            out.append((
+                chunk,
+                SourceLocation(page_number=current_page, section=current_section),
+                {
+                    "page": current_page,
+                    "page_number": current_page,
+                    "section": current_section,
+                },
+            ))
         buffer.clear()
 
     for para in document.paragraphs:
         text = para.text.strip()
         if not text:
             continue
+        words = len(text.split())
+        page_words += words
+        if page_words >= 450:
+            flush()
+            current_page += 1
+            page_words = 0
+
         if para.style is not None and para.style.name.lower().startswith("heading"):
             flush()
             current_section = text
@@ -226,8 +248,13 @@ def _extract_docx(path: Path, warnings: list[str]) -> list[Extracted]:
         for chunk in chunk_text(table_text):
             out.append((
                 chunk,
-                SourceLocation(section=f"Table {table_index}"),
-                {"is_table": True},
+                SourceLocation(page_number=current_page, section=f"Table {table_index}"),
+                {
+                    "page": current_page,
+                    "page_number": current_page,
+                    "section": f"Table {table_index}",
+                    "is_table": True,
+                },
             ))
     return out
 
@@ -348,8 +375,12 @@ def process_document(path_str: str) -> IngestionResult:
                 content=text,
                 location=location,
                 metadata={
-                    "chunk_index": index,
+                    "chunk_index": index + 1,
+                    "page": location.page_number or 1,
+                    "page_number": location.page_number or 1,
+                    "section": location.section or "",
                     "source_type": source_type.value,
+                    "text": text,
                     **extra,
                 },
             )

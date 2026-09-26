@@ -89,11 +89,27 @@ async def ingest(files: list[UploadFile] = File(...)) -> dict:
 
             stored_path = pipeline.store_upload(upload.filename or "upload", data)
             result = pipeline.ingest_file(str(stored_path))
+
+            chunk_records = []
+            for idx, item in enumerate(result.items, start=1):
+                page = item.location.page_number or item.metadata.get("page", 1)
+                chunk_records.append({
+                    "chunk_id": item.item_id,
+                    "chunk_index": item.metadata.get("chunk_index", idx),
+                    "page": page,
+                    "section": item.location.section or "",
+                    "text": item.content,
+                    "char_count": len(item.content),
+                })
+
             results.append({
                 "filename": result.source.filename,
                 "source_id": result.source.source_id,
                 "source_type": result.source.source_type.value,
                 "items_indexed": len(result.items),
+                "chunks_count": len(result.items),
+                "chunks": chunk_records,
+                "pages": max([c["page"] for c in chunk_records], default=1) if chunk_records else 1,
                 "relationships": len(result.relationships),
                 "success": result.success,
                 "error": result.error,
@@ -189,6 +205,39 @@ def get_source(source_id: str) -> dict:
     return detail
 
 
+@app.get("/source/{source_id}/chunks")
+def get_source_chunks(source_id: str) -> dict:
+    pipeline = get_pipeline()
+    source = pipeline.store.get_source(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    items = pipeline.store.get_items_by_source(source_id)
+    chunks = [
+        {
+            "chunk_id": item.item_id,
+            "chunk_index": item.metadata.get("chunk_index", idx + 1),
+            "page": item.location.page_number or item.metadata.get("page", 1),
+            "section": item.location.section or "",
+            "text": item.content,
+            "char_count": len(item.content),
+        }
+        for idx, item in enumerate(items)
+    ]
+    return {
+        "source": source.model_dump(),
+        "total_chunks": len(chunks),
+        "total_pages": max([c["page"] for c in chunks], default=1) if chunks else 1,
+        "chunks": chunks,
+    }
+
+
+@app.delete("/source/{source_id}")
+def delete_source(source_id: str) -> dict:
+    pipeline = get_pipeline()
+    deleted = pipeline.store.delete_source(source_id)
+    return {"success": deleted, "source_id": source_id}
+
+
 @app.get("/source/{source_id}/file")
 def get_source_file(source_id: str) -> FileResponse:
     """Serve the original file. Constrained to data/ so a crafted source_id
@@ -207,3 +256,4 @@ def get_source_file(source_id: str) -> FileResponse:
             detail={"error": "Source file is outside the managed data directory."},
         )
     return FileResponse(path, filename=source.filename)
+

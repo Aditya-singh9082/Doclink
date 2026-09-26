@@ -280,6 +280,22 @@ class VectorStore:
             for r in rows
         ]
 
+    def delete_source(self, source_id: str) -> bool:
+        """Remove a source and all associated items and relationships from SQLite."""
+        with self._lock:
+            items = self.get_items_by_source(source_id)
+            if items:
+                item_ids = [it.item_id for it in items]
+                placeholders = ",".join("?" * len(item_ids))
+                self._conn.execute(
+                    f"DELETE FROM relationships WHERE source_item_id IN ({placeholders}) OR target_item_id IN ({placeholders})",
+                    item_ids + item_ids,
+                )
+                self._conn.execute("DELETE FROM items WHERE source_id = ?", (source_id,))
+            self._conn.execute("DELETE FROM sources WHERE source_id = ?", (source_id,))
+            self._conn.commit()
+            return True
+
     def get_relationships_for_items(self, item_ids: list[str]) -> list[Relationship]:
         """Deterministic relationships touching any of the given items."""
         if not item_ids:

@@ -314,6 +314,7 @@ class OpenAIProvider(InferenceProvider):
             "model": settings.online_model,
             "messages": self._build_messages(prompt, inspect_image),
             "temperature": settings.ollama_temperature,
+            "max_tokens": 800,
         }
 
         request = urllib.request.Request(

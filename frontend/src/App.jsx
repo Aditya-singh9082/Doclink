@@ -1,38 +1,80 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
 import {
-  Search, FileText, Image as ImageIcon, Headphones, File, Upload,
-  Cpu, Cloud, Shield, CheckCircle2, AlertCircle, Sparkles, ChevronDown,
-  ChevronRight, ExternalLink, RefreshCw, Layers, Database, BarChart3,
-  Sliders, Clock, ArrowRight, Zap, Info, X
+  Sparkles, Send, Paperclip, PanelLeftClose, PanelLeft, Plus,
+  FileText, Image as ImageIcon, Headphones, File, Trash2, Copy,
+  Check, ChevronDown, ChevronRight, ExternalLink, RefreshCw,
+  Search, Shield, Zap, Info, X, Layers, Cpu, Cloud, UploadCloud,
+  Eye, FileCheck, ArrowRight
 } from 'lucide-react';
 
 const API_BASE = 'http://127.0.0.1:8000';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('ask'); // ask, ingest, sources, system
-  const [queryModality, setQueryModality] = useState('TEXT'); // TEXT, IMAGE, AUDIO, DOCUMENT
-  const [queryText, setQueryText] = useState('');
-  const [queryFile, setQueryFile] = useState(null);
-  const [topK, setTopK] = useState(10);
-  const [rerankTopK, setRerankTopK] = useState(5);
-  const [backend, setBackend] = useState('offline'); // offline or online
+  // Navigation & UI state
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [activeSessionId, setActiveSessionId] = useState('default');
+  const [sessions, setSessions] = useState(() => {
+    const saved = localStorage.getItem('evidence_sessions');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { }
+    }
+    return [{
+      id: 'default',
+      title: 'New Investigation',
+      createdAt: new Date().toISOString(),
+      messages: []
+    }];
+  });
+
+  // Chat input & query state
+  const [inputQuery, setInputQuery] = useState('');
+  const [stagedFile, setStagedFile] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [response, setResponse] = useState(null);
-  const [error, setError] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
 
-  // System & Vault state
+  // Settings & Models
+  const [backend, setBackend] = useState('online'); // 'online' (Groq Cloud) or 'offline' (Ollama Local)
+  const [topK, setTopK] = useState(8);
+  const [rerankTopK, setRerankTopK] = useState(4);
   const [healthData, setHealthData] = useState(null);
-  const [sourcesList, setSourcesList] = useState([]);
-  const [ingestFiles, setIngestFiles] = useState([]);
-  const [ingestResults, setIngestResults] = useState(null);
-  const [ingesting, setIngesting] = useState(false);
-  const [selectedCitation, setSelectedCitation] = useState(null);
 
-  // Load health & sources on mount
+  // Vault & Documents
+  const [sources, setSources] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadSuccessMsg, setUploadSuccessMsg] = useState(null);
+
+  // Chunks Inspector Modal
+  const [inspectDoc, setInspectDoc] = useState(null);
+  const [inspectChunks, setInspectChunks] = useState([]);
+  const [loadingChunks, setLoadingChunks] = useState(false);
+  const [chunkSearch, setChunkSearch] = useState('');
+  const [selectedPageFilter, setSelectedPageFilter] = useState('all');
+
+  // Selected Citation Inspector Modal
+  const [activeCitationModal, setActiveCitationModal] = useState(null);
+
+  const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const vaultFileInputRef = useRef(null);
+  const textareaRef = useRef(null);
+
+  // Sync sessions with localStorage
+  useEffect(() => {
+    localStorage.setItem('evidence_sessions', JSON.stringify(sessions));
+  }, [sessions]);
+
+  // Load initial health & sources
   useEffect(() => {
     fetchHealth();
     fetchSources();
   }, [backend]);
+
+  // Auto-scroll chat to bottom
+  const currentSession = sessions.find(s => s.id === activeSessionId) || sessions[0];
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [currentSession?.messages, loading]);
 
   const fetchHealth = async () => {
     try {
@@ -40,7 +82,7 @@ export default function App() {
       const data = await res.json();
       setHealthData(data);
     } catch (err) {
-      console.error('Failed to fetch health', err);
+      console.error('Failed to fetch health status', err);
     }
   };
 
@@ -48,24 +90,166 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/sources`);
       const data = await res.json();
-      setSourcesList(data.sources || []);
+      setSources(data.sources || []);
     } catch (err) {
       console.error('Failed to fetch sources', err);
     }
   };
 
-  const handleQuery = async (e) => {
-    if (e) e.preventDefault();
-    if (!queryText.trim() && queryModality === 'TEXT') return;
+  const handleCreateNewChat = () => {
+    const newSession = {
+      id: 'session_' + Date.now(),
+      title: 'New Investigation',
+      createdAt: new Date().toISOString(),
+      messages: []
+    };
+    setSessions(prev => [newSession, ...prev]);
+    setActiveSessionId(newSession.id);
+    setInputQuery('');
+    setStagedFile(null);
+    if (textareaRef.current) textareaRef.current.focus();
+  };
 
-    setLoading(true);
-    setError(null);
-    setResponse(null);
+  const handleDeleteSession = (sessionId, e) => {
+    e.stopPropagation();
+    if (sessions.length <= 1) {
+      handleCreateNewChat();
+      return;
+    }
+    const filtered = sessions.filter(s => s.id !== sessionId);
+    setSessions(filtered);
+    if (activeSessionId === sessionId) {
+      setActiveSessionId(filtered[0].id);
+    }
+  };
+
+  // Open Document Chunks Inspector
+  const handleInspectDocument = async (source) => {
+    setInspectDoc(source);
+    setLoadingChunks(true);
+    setChunkSearch('');
+    setSelectedPageFilter('all');
+    try {
+      const res = await fetch(`${API_BASE}/source/${source.source_id}/chunks`);
+      if (res.ok) {
+        const data = await res.json();
+        setInspectChunks(data.chunks || []);
+      } else {
+        // Fallback to get_source
+        const res2 = await fetch(`${API_BASE}/source/${source.source_id}`);
+        const data2 = await res2.json();
+        const formatted = (data2.items || []).map((it, idx) => ({
+          chunk_id: it.item_id,
+          chunk_index: it.metadata?.chunk_index || (idx + 1),
+          page: it.location?.page_number || it.metadata?.page || 1,
+          section: it.location?.section || '',
+          text: it.content,
+          char_count: it.content?.length || 0,
+        }));
+        setInspectChunks(formatted);
+      }
+    } catch (err) {
+      console.error('Failed to load chunks', err);
+    } finally {
+      setLoadingChunks(false);
+    }
+  };
+
+  // Delete source from vault
+  const handleDeleteSource = async (sourceId, e) => {
+    e.stopPropagation();
+    if (!window.confirm('Delete this file and all its indexed chunks from the database?')) return;
+    try {
+      await fetch(`${API_BASE}/source/${sourceId}`, { method: 'DELETE' });
+      fetchSources();
+      if (inspectDoc?.source_id === sourceId) {
+        setInspectDoc(null);
+      }
+    } catch (err) {
+      console.error('Failed to delete source', err);
+    }
+  };
+
+  // Handle uploading files into vault
+  const handleVaultUpload = async (files) => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    setUploadSuccessMsg(null);
+    const formData = new FormData();
+    Array.from(files).forEach(f => formData.append('files', f));
 
     try {
-      if (queryModality === 'TEXT') {
+      const res = await fetch(`${API_BASE}/ingest`, {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      fetchSources();
+      const count = data.indexed || 0;
+      const totalChunks = (data.results || []).reduce((acc, r) => acc + (r.chunks_count || r.items_indexed || 0), 0);
+      setUploadSuccessMsg(`Successfully indexed ${count} file(s) into ${totalChunks} chunks!`);
+      setTimeout(() => setUploadSuccessMsg(null), 6000);
+    } catch (err) {
+      console.error('Upload failed', err);
+      alert('Ingestion error: ' + err.message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // Submit query
+  const handleSendMessage = async (textToSend = inputQuery) => {
+    const text = textToSend.trim();
+    if (!text && !stagedFile) return;
+
+    const userMessage = {
+      id: 'msg_' + Date.now(),
+      sender: 'user',
+      text: text || `Analyze attached file: ${stagedFile?.name}`,
+      attachedFile: stagedFile ? { name: stagedFile.name, size: stagedFile.size } : null,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    // Update session messages and set title if first message
+    setSessions(prev => prev.map(s => {
+      if (s.id === activeSessionId) {
+        const isFirst = s.messages.length === 0;
+        return {
+          ...s,
+          title: isFirst ? (text.slice(0, 30) || 'Document Query') : s.title,
+          messages: [...s.messages, userMessage],
+        };
+      }
+      return s;
+    }));
+
+    setInputQuery('');
+    const fileToUpload = stagedFile;
+    setStagedFile(null);
+    setLoading(true);
+
+    try {
+      let data;
+      if (fileToUpload) {
+        // Query with file directly
+        const formData = new FormData();
+        formData.append('file', fileToUpload);
+        formData.append('instruction', text || 'Summarize this file and list key insights.');
+        formData.append('query_modality', fileToUpload.type.startsWith('image/') ? 'image' : fileToUpload.type.startsWith('audio/') ? 'audio' : 'document');
+        formData.append('top_k', topK);
+        formData.append('rerank_top_k', rerankTopK);
+        formData.append('backend', backend);
+
+        const res = await fetch(`${API_BASE}/query_file`, {
+          method: 'POST',
+          body: formData,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        data = await res.json();
+      } else {
+        // Text query
         const payload = {
-          query: queryText.trim(),
+          query: text,
           top_k: Number(topK),
           rerank_top_k: Number(rerankTopK),
           inference_mode: 'local',
@@ -77,722 +261,771 @@ export default function App() {
           body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        const data = await res.json();
-        setResponse(data);
-      } else {
-        // Query with file
-        if (!queryFile) {
-          setError('Please select a file to query with.');
-          setLoading(false);
-          return;
-        }
-        const formData = new FormData();
-        formData.append('file', queryFile);
-        formData.append('instruction', queryText.trim());
-        formData.append('query_modality', queryModality.toLowerCase());
-        formData.append('top_k', topK);
-        formData.append('rerank_top_k', rerankTopK);
-        formData.append('backend', backend);
-
-        const res = await fetch(`${API_BASE}/query_file`, {
-          method: 'POST',
-          body: formData,
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        const data = await res.json();
-        setResponse(data);
+        data = await res.json();
       }
+
+      const assistantMessage = {
+        id: 'msg_ai_' + Date.now(),
+        sender: 'assistant',
+        text: data.answer || 'No response generated.',
+        citations: data.citations || [],
+        retrieved_items: data.retrieved_items || [],
+        confidence: data.confidence,
+        latency_ms: data.latency_ms || {},
+        abstained: data.abstained,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+
+      setSessions(prev => prev.map(s => {
+        if (s.id === activeSessionId) {
+          return {
+            ...s,
+            messages: [...s.messages, assistantMessage],
+          };
+        }
+        return s;
+      }));
+
+      // Refresh sources if a file was ingested
+      if (fileToUpload) fetchSources();
     } catch (err) {
-      setError(err.message || 'Failed to execute query.');
+      console.error('Query error:', err);
+      const errorMessage = {
+        id: 'msg_err_' + Date.now(),
+        sender: 'assistant',
+        text: `⚠️ **Processing Error**: Could not complete query. \n\n*Details*: ${err.message}`,
+        isError: true,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      setSessions(prev => prev.map(s => {
+        if (s.id === activeSessionId) {
+          return { ...s, messages: [...s.messages, errorMessage] };
+        }
+        return s;
+      }));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleIngest = async (e) => {
-    e.preventDefault();
-    if (!ingestFiles.length) return;
-
-    setIngesting(true);
-    setIngestResults(null);
-
-    try {
-      const formData = new FormData();
-      for (const file of ingestFiles) {
-        formData.append('files', file);
-      }
-      const res = await fetch(`${API_BASE}/ingest`, {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-      setIngestResults(data);
-      setIngestFiles([]);
-      fetchHealth();
-      fetchSources();
-    } catch (err) {
-      alert(`Ingestion failed: ${err.message}`);
-    } finally {
-      setIngesting(false);
-    }
+  const copyToClipboard = (text, id) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const suggestions = [
-    "What is Test Automation according to the pdf?",
-    "Who is the student in the docx?",
-    "Who is Prof. Sujata Oak?",
-    "What is the company name in the annual report?",
-    "What are the Linux basic rules in the image?",
-    "Summarize DevOps Experiment 6"
-  ];
+  // Get file type icon and color
+  const getFileIcon = (filename) => {
+    const ext = filename?.split('.').pop()?.toLowerCase();
+    if (ext === 'pdf') return <FileText className="w-4 h-4 text-rose-400" />;
+    if (['doc', 'docx'].includes(ext)) return <FileText className="w-4 h-4 text-blue-400" />;
+    if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) return <ImageIcon className="w-4 h-4 text-emerald-400" />;
+    if (['mp3', 'wav', 'ogg'].includes(ext)) return <Headphones className="w-4 h-4 text-purple-400" />;
+    return <File className="w-4 h-4 text-slate-400" />;
+  };
+
+  // Filter chunks in inspector
+  const filteredChunks = inspectChunks.filter(c => {
+    const matchesSearch = !chunkSearch || c.text?.toLowerCase().includes(chunkSearch.toLowerCase());
+    const matchesPage = selectedPageFilter === 'all' || String(c.page) === String(selectedPageFilter);
+    return matchesSearch && matchesPage;
+  });
+
+  const availablePages = Array.from(new Set(inspectChunks.map(c => c.page))).sort((a, b) => a - b);
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      {/* Top Obsidian Glass Navigation */}
-      <header style={{
-        position: 'sticky', top: 0, zIndex: 50,
-        background: 'rgba(7, 8, 12, 0.85)', backdropFilter: 'blur(20px)',
-        borderBottom: '1px solid var(--border-obsidian)',
-        padding: '14px 28px', display: 'flex', alignItems: 'center', justifyContent: 'space-between'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{
-            width: '38px', height: '38px', borderRadius: '10px',
-            background: 'linear-gradient(135deg, #00f2fe 0%, #9d4edd 100%)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 0 15px rgba(0, 242, 254, 0.4)'
-          }}>
-            <Sparkles size={20} color="#050811" />
-          </div>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.25rem', fontWeight: 700, letterSpacing: '-0.02em' }}>
-                Evidence AI
-              </h1>
-              <span className="obsidian-badge badge-cyan" style={{ fontSize: '0.68rem', padding: '2px 8px' }}>
-                OBSIDIAN RAG
-              </span>
+    <div className="flex h-screen w-screen overflow-hidden bg-[#080a11] text-slate-100 font-sans antialiased">
+      {/* ------------------------------------------------------------- SIDEBAR */}
+      <aside
+        className={`flex flex-col border-r border-white/10 bg-[#06070c] transition-all duration-300 ease-in-out z-20 ${
+          sidebarOpen ? 'w-80 min-w-[20rem]' : 'w-0 -translate-x-full overflow-hidden'
+        }`}
+      >
+        {/* Sidebar Header */}
+        <div className="p-4 border-b border-white/10 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+              <Sparkles className="w-4 h-4 text-white" />
             </div>
-            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              Multimodal Grounded Retrieval & Citation Engine
-            </p>
+            <div>
+              <div className="font-bold text-sm tracking-wide bg-gradient-to-r from-white via-slate-200 to-cyan-400 bg-clip-text text-transparent font-['Outfit']">
+                Evidence AI
+              </div>
+              <div className="text-[10px] text-slate-400 flex items-center gap-1.5 font-mono">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                Grounded RAG v2.4
+              </div>
+            </div>
           </div>
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="p-1.5 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white transition"
+            title="Collapse Sidebar"
+          >
+            <PanelLeftClose className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Status Pills & Backend Switcher */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          {/* Quick Metrics */}
-          {healthData?.index && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginRight: '8px' }}>
-              <span className="obsidian-badge badge-violet">
-                <Database size={12} /> {healthData.index.sources} Sources
-              </span>
-              <span className="obsidian-badge badge-emerald">
-                <Layers size={12} /> {healthData.index.items} Items
-              </span>
+        {/* New Chat Button */}
+        <div className="p-3">
+          <button
+            onClick={handleCreateNewChat}
+            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-500/15 via-blue-500/10 to-transparent hover:from-cyan-500/25 hover:via-blue-500/20 border border-cyan-500/30 hover:border-cyan-400/50 text-cyan-300 hover:text-white font-medium text-xs tracking-wide transition shadow-sm"
+          >
+            <Plus className="w-4 h-4 text-cyan-400" />
+            <span>New Investigation</span>
+          </button>
+        </div>
+
+        {/* Knowledge Vault / Uploaded Documents Section */}
+        <div className="px-3 py-2 flex flex-col flex-1 min-h-0 overflow-hidden">
+          <div className="flex items-center justify-between px-2 pb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+            <span className="flex items-center gap-1.5 font-['Outfit']">
+              <Layers className="w-3.5 h-3.5 text-cyan-400" />
+              Attached Context ({sources.length})
+            </span>
+            <button
+              onClick={() => vaultFileInputRef.current?.click()}
+              className="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 normal-case font-normal hover:underline"
+              title="Add documents to knowledge vault"
+            >
+              <Plus className="w-3 h-3" /> Add Files
+            </button>
+            <input
+              type="file"
+              ref={vaultFileInputRef}
+              multiple
+              className="hidden"
+              onChange={(e) => handleVaultUpload(e.target.files)}
+            />
+          </div>
+
+          {/* Upload Success Alert */}
+          {uploadSuccessMsg && (
+            <div className="mb-2 p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px] flex items-center gap-1.5 animate-fade-in">
+              <FileCheck className="w-3.5 h-3.5 shrink-0" />
+              <span>{uploadSuccessMsg}</span>
             </div>
           )}
 
-          {/* Backend Switcher Toggle */}
-          <div style={{
-            display: 'flex', background: 'rgba(255,255,255,0.05)',
-            borderRadius: '10px', border: '1px solid var(--border-obsidian)',
-            padding: '3px'
-          }}>
-            <button
-              onClick={() => setBackend('offline')}
-              style={{
-                padding: '6px 14px', borderRadius: '8px',
-                background: backend === 'offline' ? 'linear-gradient(135deg, rgba(0,242,254,0.2), rgba(157,78,221,0.2))' : 'transparent',
-                color: backend === 'offline' ? 'var(--cyan)' : 'var(--text-muted)',
-                fontWeight: 600, fontSize: '0.8rem', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', gap: '6px',
-                border: backend === 'offline' ? '1px solid rgba(0,242,254,0.4)' : '1px solid transparent',
-                transition: 'all 0.2s ease'
-              }}
-            >
-              <Cpu size={14} />
-              <span>Ollama Offline</span>
-            </button>
-            <button
-              onClick={() => setBackend('online')}
-              style={{
-                padding: '6px 14px', borderRadius: '8px',
-                background: backend === 'online' ? 'linear-gradient(135deg, rgba(0,242,254,0.2), rgba(157,78,221,0.2))' : 'transparent',
-                color: backend === 'online' ? 'var(--cyan)' : 'var(--text-muted)',
-                fontWeight: 600, fontSize: '0.8rem', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', gap: '6px',
-                border: backend === 'online' ? '1px solid rgba(0,242,254,0.4)' : '1px solid transparent',
-                transition: 'all 0.2s ease'
-              }}
-            >
-              <Cloud size={14} />
-              <span>Cloud Groq</span>
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Container */}
-      <main style={{ maxWidth: '1280px', margin: '0 auto', width: '100%', padding: '24px', flex: 1 }}>
-        {/* Navigation Tabs Bar */}
-        <div style={{
-          display: 'flex', gap: '10px', marginBottom: '28px',
-          borderBottom: '1px solid var(--border-obsidian)', paddingBottom: '12px'
-        }}>
-          {[
-            { id: 'ask', label: 'Ask Intelligence', icon: Search },
-            { id: 'ingest', label: 'Vault Ingest', icon: Upload },
-            { id: 'sources', label: 'Knowledge Sources', icon: Database },
-            { id: 'system', label: 'System & Telemetry', icon: Sliders },
-          ].map(tab => {
-            const Icon = tab.icon;
-            const active = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                style={{
-                  background: active ? 'rgba(0, 242, 254, 0.1)' : 'transparent',
-                  color: active ? 'var(--cyan)' : 'var(--text-sub)',
-                  border: active ? '1px solid rgba(0, 242, 254, 0.35)' : '1px solid transparent',
-                  padding: '10px 20px', borderRadius: '10px',
-                  fontFamily: 'var(--font-heading)', fontWeight: 600, fontSize: '0.9rem',
-                  display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer',
-                  transition: 'all 0.2s ease'
-                }}
+          {/* Document List */}
+          <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
+            {sources.length === 0 ? (
+              <div
+                onClick={() => vaultFileInputRef.current?.click()}
+                className="p-4 rounded-xl border border-dashed border-white/10 hover:border-cyan-500/40 bg-white/[0.02] hover:bg-cyan-500/[0.03] text-center cursor-pointer transition group"
               >
-                <Icon size={16} />
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* TAB 1: ASK INTELLIGENCE */}
-        {activeTab === 'ask' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            {/* Input Box Card */}
-            <div className="obsidian-card glow-border" style={{ padding: '24px' }}>
-              {/* Modality Selector */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Ask Mode:
-                </span>
-                {[
-                  { id: 'TEXT', label: 'Text Question', icon: FileText, desc: 'Search all ingested documents' },
-                  { id: 'DOCUMENT', label: 'Document Query', icon: File, desc: 'Query by PDF/DOCX file' },
-                  { id: 'IMAGE', label: 'Image Query', icon: ImageIcon, desc: 'Query by Screenshot' },
-                  { id: 'AUDIO', label: 'Audio Query', icon: Headphones, desc: 'Query by Voice' },
-                ].map(m => {
-                  const Icon = m.icon;
-                  const selected = queryModality === m.id;
-                  return (
-                    <button
-                      key={m.id}
-                      onClick={() => setQueryModality(m.id)}
-                      style={{
-                        padding: '6px 14px', borderRadius: '8px',
-                        background: selected ? 'rgba(255, 255, 255, 0.1)' : 'transparent',
-                        border: selected ? '1px solid var(--border-highlight)' : '1px solid var(--border-obsidian)',
-                        color: selected ? 'var(--cyan)' : 'var(--text-sub)',
-                        fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer',
-                        display: 'flex', alignItems: 'center', gap: '6px'
-                      }}
-                    >
-                      <Icon size={14} />
-                      {m.label}
-                    </button>
-                  );
-                })}
+                <UploadCloud className="w-6 h-6 text-slate-500 group-hover:text-cyan-400 mx-auto mb-1.5 transition" />
+                <div className="text-xs font-medium text-slate-300">No documents yet</div>
+                <div className="text-[11px] text-slate-500 mt-0.5">Click to upload PDF, Word or images</div>
               </div>
-
-              {/* Notice for File Query */}
-              {queryModality !== 'TEXT' && (
-                <div style={{
-                  padding: '12px 16px', background: 'rgba(0, 242, 254, 0.05)',
-                  border: '1px solid rgba(0, 242, 254, 0.2)', borderRadius: '10px',
-                  marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '12px'
-                }}>
-                  <Info size={18} color="var(--cyan)" />
-                  <div style={{ fontSize: '0.82rem', color: 'var(--text-sub)' }}>
-                    Upload a {queryModality.toLowerCase()} below to extract its evidence representation and search across the index.
-                  </div>
-                  <input
-                    type="file"
-                    onChange={(e) => setQueryFile(e.target.files[0])}
-                    style={{ fontSize: '0.8rem', color: 'var(--text-main)' }}
-                  />
-                </div>
-              )}
-
-              {/* Question Textarea */}
-              <div style={{ position: 'relative' }}>
-                <textarea
-                  className="obsidian-input"
-                  rows={3}
-                  placeholder={
-                    queryModality === 'TEXT'
-                      ? "Ask any question about your PDF, DOCX, images, or audio (e.g. 'What is Test Automation?')"
-                      : `Enter instruction or question about this ${queryModality.toLowerCase()} (optional)`
-                  }
-                  value={queryText}
-                  onChange={(e) => setQueryText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleQuery();
-                    }
-                  }}
-                  style={{ resize: 'none', paddingRight: '120px' }}
-                />
-                <button
-                  className="rare-btn-primary"
-                  onClick={handleQuery}
-                  disabled={loading || (queryModality === 'TEXT' && !queryText.trim())}
-                  style={{ position: 'absolute', right: '12px', bottom: '14px' }}
+            ) : (
+              sources.map((src) => (
+                <div
+                  key={src.source_id}
+                  onClick={() => handleInspectDocument(src)}
+                  className="group relative flex items-center justify-between p-2.5 rounded-xl border border-white/5 hover:border-cyan-500/30 bg-white/[0.02] hover:bg-white/[0.05] cursor-pointer transition"
                 >
-                  {loading ? (
-                    <>
-                      <RefreshCw size={16} className="animate-spin" />
-                      <span>Thinking...</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>Ask AI</span>
-                      <ArrowRight size={16} />
-                    </>
-                  )}
-                </button>
-              </div>
-
-              {/* Suggestion Pills */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: '14px' }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Suggestions:</span>
-                {suggestions.map((s, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => { setQueryText(s); setQueryModality('TEXT'); }}
-                    style={{
-                      background: 'rgba(255, 255, 255, 0.04)',
-                      border: '1px solid var(--border-obsidian)',
-                      borderRadius: '9999px', padding: '4px 12px',
-                      color: 'var(--text-sub)', fontSize: '0.75rem', cursor: 'pointer',
-                      transition: 'all 0.15s ease'
-                    }}
-                    onMouseEnter={(e) => e.target.style.borderColor = 'rgba(0, 242, 254, 0.4)'}
-                    onMouseLeave={(e) => e.target.style.borderColor = 'var(--border-obsidian)'}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-
-              {/* Hyperparameters Drawer */}
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: '24px', marginTop: '18px',
-                paddingTop: '16px', borderTop: '1px solid rgba(255, 255, 255, 0.05)',
-                fontSize: '0.8rem', color: 'var(--text-muted)'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <span>Retrieve top_k: <strong>{topK}</strong></span>
-                  <input
-                    type="range" min="1" max="25" value={topK}
-                    onChange={(e) => setTopK(e.target.value)}
-                    style={{ accentColor: 'var(--cyan)', width: '80px' }}
-                  />
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <span>Rerank top_k: <strong>{rerankTopK}</strong></span>
-                  <input
-                    type="range" min="1" max="15" value={rerankTopK}
-                    onChange={(e) => setRerankTopK(e.target.value)}
-                    style={{ accentColor: 'var(--cyan)', width: '80px' }}
-                  />
-                </div>
-                <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Shield size={14} color="var(--emerald)" />
-                  <span>Grounding Strict Mode: <strong>Active</strong></span>
-                </div>
-              </div>
-            </div>
-
-            {/* Error Message */}
-            {error && (
-              <div style={{
-                padding: '16px', borderRadius: '12px', background: 'rgba(244, 63, 94, 0.1)',
-                border: '1px solid rgba(244, 63, 94, 0.3)', color: '#fda4af',
-                display: 'flex', alignItems: 'center', gap: '10px'
-              }}>
-                <AlertCircle size={20} color="var(--rose)" />
-                <span>{error}</span>
-              </div>
-            )}
-
-            {/* GROUNDED ANSWER CARD */}
-            {response && (
-              <div className="obsidian-card glow-border" style={{ padding: '28px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                {/* Header status */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-obsidian)', paddingBottom: '16px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    {response.abstained ? (
-                      <span className="obsidian-badge badge-amber" style={{ padding: '6px 12px', fontSize: '0.85rem' }}>
-                        <AlertCircle size={16} /> Abstained (Insufficient Evidence)
-                      </span>
-                    ) : (
-                      <span className="obsidian-badge badge-emerald" style={{ padding: '6px 12px', fontSize: '0.85rem' }}>
-                        <CheckCircle2 size={16} /> Grounded Answer Verified
-                      </span>
-                    )}
-                    {response.confidence !== null && (
-                      <span className="obsidian-badge badge-cyan">
-                        Confidence: {(response.confidence * 100).toFixed(1)}%
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Timing Latency */}
-                  {response.latency_ms?.total_ms && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                      <Clock size={14} />
-                      <span>Total: {(response.latency_ms.total_ms / 1000).toFixed(2)}s</span>
-                      <span>(Gen: {(response.latency_ms.generation_ms || 0).toFixed(0)}ms)</span>
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                    <div className="p-1.5 rounded-lg bg-white/5 shrink-0">
+                      {getFileIcon(src.filename)}
                     </div>
-                  )}
-                </div>
-
-                {/* Answer Content */}
-                <div style={{ fontSize: '1.05rem', lineHeight: '1.7', color: 'var(--text-main)' }}>
-                  {response.answer}
-                </div>
-
-                {/* Citations Bar */}
-                {response.citations && response.citations.length > 0 && (
-                  <div style={{ marginTop: '10px' }}>
-                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '10px' }}>
-                      Programmatic Citations ({response.citations.length})
-                    </div>
-                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                      {response.citations.map((c, i) => (
-                        <div
-                          key={i}
-                          onClick={() => setSelectedCitation(c)}
-                          style={{
-                            background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(0, 242, 254, 0.25)',
-                            borderRadius: '10px', padding: '10px 14px', cursor: 'pointer',
-                            display: 'flex', flexDirection: 'column', gap: '4px', maxWidth: '320px',
-                            transition: 'all 0.2s ease'
-                          }}
-                          onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--cyan)'}
-                          onMouseLeave={(e) => e.currentTarget.style.borderColor = 'rgba(0, 242, 254, 0.25)'}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 600, color: 'var(--cyan)' }}>
-                            <FileText size={14} />
-                            <span>{c.filename}</span>
-                            {c.location?.page_number && <span style={{ color: 'var(--text-muted)' }}>p.{c.location.page_number}</span>}
-                          </div>
-                          {c.excerpt && (
-                            <div style={{ fontSize: '0.75rem', color: 'var(--text-sub)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              "{c.excerpt}"
-                            </div>
-                          )}
-                        </div>
-                      ))}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-slate-200 truncate group-hover:text-cyan-300 transition">
+                        {src.filename}
+                      </div>
+                      <div className="text-[10px] text-slate-500 flex items-center gap-2 mt-0.5">
+                        <span className="text-cyan-400/90 font-mono">
+                          {src.file_size ? `${(src.file_size / 1024).toFixed(0)} KB` : 'Indexed'}
+                        </span>
+                        <span>•</span>
+                        <span className="text-slate-400">Click to view chunks</span>
+                      </div>
                     </div>
                   </div>
-                )}
-
-                {/* Retrieved Evidence Pool (Expandable) */}
-                {response.retrieved_items && response.retrieved_items.length > 0 && (
-                  <div style={{ marginTop: '10px' }}>
-                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '10px' }}>
-                      Retrieved Evidence Pool ({response.retrieved_items.length} Chunks)
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      {response.retrieved_items.map((r, i) => (
-                        <details
-                          key={i}
-                          style={{
-                            background: 'rgba(11, 14, 22, 0.8)', border: '1px solid var(--border-obsidian)',
-                            borderRadius: '10px', padding: '10px 14px', fontSize: '0.85rem'
-                          }}
-                        >
-                          <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text-sub)' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <span style={{ color: 'var(--cyan)', fontWeight: 600 }}>#{r.rank}</span>
-                              <span style={{ color: 'var(--text-main)', fontWeight: 500 }}>{r.item.location?.page_number ? `Page ${r.item.location.page_number}` : r.item.modality}</span>
-                              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>({r.item.item_id?.slice(0, 8)})</span>
-                            </div>
-                            <div style={{ display: 'flex', gap: '10px', fontSize: '0.75rem' }}>
-                              <span>Sim: {r.retrieval_score?.toFixed(3)}</span>
-                              <span style={{ color: 'var(--emerald)' }}>Rerank: {r.rerank_score?.toFixed(2)}</span>
-                            </div>
-                          </summary>
-                          <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.05)', color: 'var(--text-main)', lineHeight: '1.6', fontSize: '0.82rem', fontFamily: 'var(--font-mono)' }}>
-                            {r.item.content}
-                          </div>
-                        </details>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* TAB 2: INGEST SOURCES */}
-        {activeTab === 'ingest' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            <div className="obsidian-card" style={{ padding: '28px' }}>
-              <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.2rem', marginBottom: '8px', fontWeight: 600 }}>
-                Vault Ingestion Hub
-              </h2>
-              <p style={{ color: 'var(--text-sub)', fontSize: '0.85rem', marginBottom: '20px' }}>
-                Upload files once to convert, OCR, transcribe, and index into FAISS + SQLite.
-                Files persist across restarts and are immediately searchable.
-              </p>
-
-              {/* Upload Drop Zone */}
-              <div style={{
-                border: '2px dashed var(--border-obsidian)', borderRadius: '16px',
-                padding: '40px 20px', textAlign: 'center', background: 'rgba(255,255,255,0.02)',
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px'
-              }}>
-                <div style={{
-                  width: '54px', height: '54px', borderRadius: '50%',
-                  background: 'rgba(0, 242, 254, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center'
-                }}>
-                  <Upload size={24} color="var(--cyan)" />
-                </div>
-                <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>
-                  Select documents, images, or audio files
-                </div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                  Supported formats: PDF, DOCX, DOC, TXT, CSV, PNG, JPG, MP3, WAV
-                </div>
-                <input
-                  type="file"
-                  multiple
-                  onChange={(e) => setIngestFiles(Array.from(e.target.files))}
-                  style={{ marginTop: '12px', fontSize: '0.85rem' }}
-                />
-              </div>
-
-              {/* Ingest Action Button */}
-              {ingestFiles.length > 0 && (
-                <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
-                  <button
-                    className="rare-btn-primary"
-                    onClick={handleIngest}
-                    disabled={ingesting}
-                  >
-                    {ingesting ? (
-                      <>
-                        <RefreshCw size={16} className="animate-spin" />
-                        <span>Processing & Indexing...</span>
-                      </>
-                    ) : (
-                      <>
-                        <span>Ingest {ingestFiles.length} File(s)</span>
-                        <ArrowRight size={16} />
-                      </>
-                    )}
-                  </button>
-                </div>
-              )}
-
-              {/* Ingestion Results Feedback */}
-              {ingestResults && (
-                <div style={{ marginTop: '24px', padding: '18px', borderRadius: '12px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.25)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600, color: 'var(--emerald)', marginBottom: '8px' }}>
-                    <CheckCircle2 size={18} />
-                    <span>Successfully Ingested ({ingestResults.indexed} Indexed, {ingestResults.failed} Failed)</span>
-                  </div>
-                  {ingestResults.results?.map((r, i) => (
-                    <div key={i} style={{ fontSize: '0.82rem', color: 'var(--text-sub)', marginTop: '4px' }}>
-                      • <strong>{r.filename}</strong> — {r.items_indexed} chunks, {r.relationships} graph edges
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 3: KNOWLEDGE VAULT */}
-        {activeTab === 'sources' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.2rem', fontWeight: 600 }}>
-                  Indexed Knowledge Sources
-                </h2>
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                  All persistent assets stored in SQLite and vector space
-                </p>
-              </div>
-              <button className="rare-btn-secondary" onClick={fetchSources}>
-                <RefreshCw size={14} /> Refresh
-              </button>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: '16px' }}>
-              {sourcesList.map((s, idx) => (
-                <div key={idx} className="obsidian-card glow-hover" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span className="obsidian-badge badge-cyan" style={{ textTransform: 'uppercase' }}>
-                        {s.source_type}
-                      </span>
-                    </div>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                      {(s.file_size / 1024).toFixed(0)} KB
-                    </span>
-                  </div>
-
-                  <h3 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-main)', wordBreak: 'break-all' }}>
-                    {s.filename}
-                  </h3>
-
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                    ID: {s.source_id}
-                  </div>
-
-                  <div style={{
-                    marginTop: 'auto', paddingTop: '12px', borderTop: '1px solid rgba(255,255,255,0.05)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between'
-                  }}>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--emerald)' }}>
-                      ● Active in Index
-                    </span>
-                    <a
-                      href={`${API_BASE}/source/${s.source_id}/file`}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ color: 'var(--cyan)', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleInspectDocument(src); }}
+                      className="p-1 hover:bg-cyan-500/20 text-slate-400 hover:text-cyan-300 rounded"
+                      title="Inspect Chunks & Pages"
                     >
-                      <span>Download</span>
-                      <ExternalLink size={12} />
-                    </a>
+                      <Eye className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={(e) => handleDeleteSource(src.source_id, e)}
+                      className="p-1 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded"
+                      title="Delete file from store"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Chat History Section */}
+          <div className="pt-3 border-t border-white/10 mt-2">
+            <div className="px-2 pb-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wider font-['Outfit']">
+              Recent Chats
+            </div>
+            <div className="max-h-36 overflow-y-auto space-y-1">
+              {sessions.map((sess) => (
+                <div
+                  key={sess.id}
+                  onClick={() => setActiveSessionId(sess.id)}
+                  className={`group flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs cursor-pointer transition ${
+                    sess.id === activeSessionId
+                      ? 'bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 font-medium'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+                  }`}
+                >
+                  <span className="truncate flex-1">{sess.title}</span>
+                  {sessions.length > 1 && (
+                    <button
+                      onClick={(e) => handleDeleteSession(sess.id, e)}
+                      className="opacity-0 group-hover:opacity-100 p-1 hover:text-rose-400 transition"
+                      title="Delete chat"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
           </div>
-        )}
+        </div>
 
-        {/* TAB 4: SYSTEM & TELEMETRY */}
-        {activeTab === 'system' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
-            {/* Ollama Card */}
-            <div className="obsidian-card" style={{ padding: '24px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-                <Cpu size={22} color="var(--cyan)" />
-                <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.1rem', fontWeight: 600 }}>
-                  Ollama Offline Runtime
-                </h3>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.85rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Status:</span>
-                  <span style={{ color: 'var(--emerald)', fontWeight: 600 }}>qwen2.5vl:3b Installed & Ready</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Context Budget:</span>
-                  <span style={{ color: 'var(--cyan)' }}>3072 Tokens (Min Power Mode)</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Idle Unload:</span>
-                  <span>5 Minutes (RAM preservation)</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Host Endpoint:</span>
-                  <span>http://localhost:11434</span>
-                </div>
-              </div>
-            </div>
+        {/* Sidebar Footer: Model Switcher & System Status */}
+        <div className="p-3 border-t border-white/10 bg-[#040508]/80">
+          <div className="text-[11px] font-semibold text-slate-400 mb-1.5 flex items-center justify-between">
+            <span className="flex items-center gap-1.5">
+              <Cpu className="w-3.5 h-3.5 text-cyan-400" /> Model Provider
+            </span>
+            <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+              backend === 'online' ? 'bg-cyan-500/20 text-cyan-300' : 'bg-purple-500/20 text-purple-300'
+            }`}>
+              {backend === 'online' ? '⚡ 0.5s Fast' : '🔒 Offline'}
+            </span>
+          </div>
 
-            {/* Cloud API Card */}
-            <div className="obsidian-card" style={{ padding: '24px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-                <Cloud size={22} color="var(--violet)" />
-                <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.1rem', fontWeight: 600 }}>
-                  Cloud Groq Inference
-                </h3>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.85rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Model:</span>
-                  <span style={{ color: 'var(--violet)', fontWeight: 600 }}>qwen/qwen3.8-27b</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Endpoint:</span>
-                  <span>api.groq.com/openai/v1</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>User-Agent:</span>
-                  <span>EvidenceAI/1.0 (CF Bypass)</span>
-                </div>
-              </div>
-            </div>
+          <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-white/[0.03] border border-white/5">
+            <button
+              onClick={() => setBackend('online')}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition ${
+                backend === 'online'
+                  ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-black shadow-md font-semibold'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>Fast Cloud</span>
+            </button>
+            <button
+              onClick={() => setBackend('offline')}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition ${
+                backend === 'offline'
+                  ? 'bg-purple-600 text-white shadow-md font-semibold'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Shield className="w-3.5 h-3.5" />
+              <span>Ollama</span>
+            </button>
+          </div>
 
-            {/* Local Models & Vector DB */}
-            <div className="obsidian-card" style={{ padding: '24px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-                <BarChart3 size={22} color="var(--emerald)" />
-                <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.1rem', fontWeight: 600 }}>
-                  Vector Engine & Reranker
-                </h3>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.85rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Embedding:</span>
-                  <span>all-MiniLM-L6-v2 (384d)</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Cross-Encoder:</span>
-                  <span>ms-marco-MiniLM-L-6-v2</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Abstention Gate:</span>
-                  <span>Dynamic Grounded Floor</span>
-                </div>
-              </div>
+          <div className="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-500">
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+              FAISS Index: {healthData?.index?.vectors || 0} vectors
+            </span>
+            <span className="font-mono text-[10px] text-slate-400">
+              {backend === 'online' ? 'Qwen-2.5' : 'qwen2.5vl'}
+            </span>
+          </div>
+        </div>
+      </aside>
+
+      {/* ------------------------------------------------------------- MAIN CHAT VIEW */}
+      <main className="flex-1 flex flex-col h-full overflow-hidden relative bg-[#080a11]">
+        {/* Top Navbar */}
+        <header className="h-14 border-b border-white/10 px-4 flex items-center justify-between shrink-0 bg-[#080a11]/90 backdrop-blur z-10">
+          <div className="flex items-center gap-3">
+            {!sidebarOpen && (
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="p-1.5 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white transition"
+                title="Expand Sidebar"
+              >
+                <PanelLeft className="w-5 h-5" />
+              </button>
+            )}
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-slate-200 tracking-wide">
+                {currentSession?.title || 'Investigation'}
+              </span>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 font-mono">
+                {backend === 'online' ? '⚡ Groq Qwen-2.5 (Fast)' : '🔒 Ollama Local (Offline)'}
+              </span>
             </div>
           </div>
-        )}
-      </main>
 
-      {/* Citation Modal / Detail Drawer */}
-      {selectedCitation && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 100,
-          background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px'
-        }}>
-          <div className="obsidian-card" style={{ maxWidth: '600px', width: '100%', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <FileText size={18} color="var(--cyan)" />
-                <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>{selectedCitation.filename}</h3>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => vaultFileInputRef.current?.click()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-300 hover:text-white transition"
+            >
+              <Paperclip className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Attach Context</span>
+            </button>
+            <button
+              onClick={() => {
+                if (window.confirm('Clear conversation messages?')) {
+                  setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, messages: [] } : s));
+                }
+              }}
+              className="p-2 hover:bg-white/5 rounded-lg text-slate-400 hover:text-rose-400 transition"
+              title="Clear Messages"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </header>
+
+        {/* Message Stream Scroll Area */}
+        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-8 space-y-6">
+          {currentSession?.messages?.length === 0 ? (
+            /* Welcome / Starter View (ChatGPT & Claude Style) */
+            <div className="max-w-2xl mx-auto my-auto pt-8 pb-12 flex flex-col items-center text-center animate-fade-in">
+              <div className="relative mb-4">
+                <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-xl shadow-cyan-500/20">
+                  <Sparkles className="w-7 h-7 text-white" />
+                </div>
+                <div className="absolute -inset-1 rounded-2xl bg-cyan-500/20 blur-lg -z-10 animate-pulse"></div>
               </div>
-              <button
-                onClick={() => setSelectedCitation(null)}
-                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+
+              <h1 className="text-2xl font-bold text-white font-['Outfit'] tracking-tight mb-2">
+                What would you like to investigate today?
+              </h1>
+              <p className="text-sm text-slate-400 max-w-lg mb-8 leading-relaxed">
+                Evidence AI processes your documents into page-level chunks with deterministic citations.
+                Upload reports, research, or PDFs and ask questions below.
+              </p>
+
+              {/* Starter Prompt Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full text-left">
+                <div
+                  onClick={() => handleSendMessage('Summarize the main objectives and findings of the uploaded document')}
+                  className="p-3.5 rounded-xl border border-white/10 hover:border-cyan-500/40 bg-white/[0.02] hover:bg-cyan-500/[0.04] cursor-pointer transition group"
+                >
+                  <div className="text-xs font-semibold text-slate-200 group-hover:text-cyan-300 flex items-center gap-1.5 mb-1 font-['Outfit']">
+                    <FileText className="w-3.5 h-3.5 text-cyan-400" />
+                    Summarize Document
+                  </div>
+                  <div className="text-[11px] text-slate-400 leading-normal">
+                    Provide a concise breakdown of objectives, methodology, and conclusions.
+                  </div>
+                </div>
+
+                <div
+                  onClick={() => handleSendMessage('What are the key technical steps or commands executed?')}
+                  className="p-3.5 rounded-xl border border-white/10 hover:border-cyan-500/40 bg-white/[0.02] hover:bg-cyan-500/[0.04] cursor-pointer transition group"
+                >
+                  <div className="text-xs font-semibold text-slate-200 group-hover:text-cyan-300 flex items-center gap-1.5 mb-1 font-['Outfit']">
+                    <Cpu className="w-3.5 h-3.5 text-blue-400" />
+                    Technical Steps & Code
+                  </div>
+                  <div className="text-[11px] text-slate-400 leading-normal">
+                    Extract all procedures, terminal commands, configurations, and scripts.
+                  </div>
+                </div>
+
+                <div
+                  onClick={() => handleSendMessage('Extract all numerical data, tables, and experimental results')}
+                  className="p-3.5 rounded-xl border border-white/10 hover:border-cyan-500/40 bg-white/[0.02] hover:bg-cyan-500/[0.04] cursor-pointer transition group"
+                >
+                  <div className="text-xs font-semibold text-slate-200 group-hover:text-cyan-300 flex items-center gap-1.5 mb-1 font-['Outfit']">
+                    <Layers className="w-3.5 h-3.5 text-emerald-400" />
+                    Extract Tables & Metrics
+                  </div>
+                  <div className="text-[11px] text-slate-400 leading-normal">
+                    Retrieve specific metrics, test pass/fail rates, and data values.
+                  </div>
+                </div>
+
+                <div
+                  onClick={() => handleSendMessage('Explain JUnit and test automation concepts from the document')}
+                  className="p-3.5 rounded-xl border border-white/10 hover:border-cyan-500/40 bg-white/[0.02] hover:bg-cyan-500/[0.04] cursor-pointer transition group"
+                >
+                  <div className="text-xs font-semibold text-slate-200 group-hover:text-cyan-300 flex items-center gap-1.5 mb-1 font-['Outfit']">
+                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                    Concept Deep-Dive
+                  </div>
+                  <div className="text-[11px] text-slate-400 leading-normal">
+                    Explain key theory definitions and examples with exact source citations.
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Active Message List */
+            currentSession.messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`max-w-3xl mx-auto flex gap-3 animate-fade-in ${
+                  msg.sender === 'user' ? 'justify-end' : 'justify-start'
+                }`}
               >
-                <X size={20} />
+                {/* Assistant Avatar */}
+                {msg.sender === 'assistant' && (
+                  <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shrink-0 shadow-md shadow-cyan-500/10 mt-1">
+                    <Sparkles className="w-4 h-4 text-white" />
+                  </div>
+                )}
+
+                {/* Message Bubble Container */}
+                <div className={`flex flex-col ${msg.sender === 'user' ? 'items-end max-w-xl' : 'items-start flex-1 min-w-0'}`}>
+                  {/* User Attached File Badge */}
+                  {msg.attachedFile && (
+                    <div className="mb-1.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-xs font-mono">
+                      <Paperclip className="w-3 h-3" />
+                      <span>{msg.attachedFile.name}</span>
+                    </div>
+                  )}
+
+                  {/* Message Bubble */}
+                  <div
+                    className={`rounded-2xl p-4 text-sm leading-relaxed ${
+                      msg.sender === 'user'
+                        ? 'bg-[#182136] text-white border border-cyan-500/20 shadow-md'
+                        : 'bg-white/[0.03] text-slate-100 border border-white/10 w-full shadow-sm'
+                    }`}
+                  >
+                    {msg.sender === 'assistant' ? (
+                      <div className="prose">
+                        <ReactMarkdown>{msg.text}</ReactMarkdown>
+                      </div>
+                    ) : (
+                      <div className="whitespace-pre-wrap">{msg.text}</div>
+                    )}
+
+                    {/* Citations Accordion (if assistant response has citations) */}
+                    {msg.citations && msg.citations.length > 0 && (
+                      <div className="mt-4 pt-3 border-t border-white/10">
+                        <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
+                          <span className="flex items-center gap-1.5 text-cyan-400 font-['Outfit']">
+                            <Layers className="w-3.5 h-3.5" />
+                            Grounded Citations ({msg.citations.length})
+                          </span>
+                          <span className="text-[10px] text-slate-500">Click to view source excerpt</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {msg.citations.map((c) => (
+                            <button
+                              key={c.citation_id}
+                              onClick={() => setActiveCitationModal(c)}
+                              className="citation-chip"
+                              title="Click to view exact chunk excerpt"
+                            >
+                              <FileText className="w-3 h-3 text-cyan-400" />
+                              <span>[{c.citation_id}] {c.filename}</span>
+                              {c.location?.page_number && (
+                                <span className="text-white/60 font-sans">• Page {c.location.page_number}</span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Footer bar for Assistant Message */}
+                    {msg.sender === 'assistant' && !msg.isError && (
+                      <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-500">
+                        <div className="flex items-center gap-3">
+                          {msg.latency_ms?.total_ms && (
+                            <span className="text-cyan-400 font-mono">
+                              ⚡ {(msg.latency_ms.total_ms / 1000).toFixed(2)}s
+                            </span>
+                          )}
+                          {msg.confidence !== null && msg.confidence !== undefined && (
+                            <span className="text-slate-400">
+                              Confidence: {Math.round(msg.confidence * 100)}%
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => copyToClipboard(msg.text, msg.id)}
+                            className="p-1 hover:text-cyan-300 text-slate-400 rounded flex items-center gap-1 transition"
+                            title="Copy response"
+                          >
+                            {copiedId === msg.id ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                <span className="text-[10px] text-emerald-400">Copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5" />
+                                <span className="text-[10px]">Copy</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* User Avatar */}
+                {msg.sender === 'user' && (
+                  <div className="w-8 h-8 rounded-xl bg-slate-700 border border-white/10 flex items-center justify-center shrink-0 mt-1 text-xs font-semibold text-white">
+                    U
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+
+          {/* Typing / Generating Indicator */}
+          {loading && (
+            <div className="max-w-3xl mx-auto flex gap-3 animate-fade-in">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shrink-0 shadow-md shadow-cyan-500/10">
+                <Sparkles className="w-4 h-4 text-white animate-spin" />
+              </div>
+              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 text-sm text-slate-300 flex items-center gap-3">
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+                <span>Retrieving chunks & generating grounded response...</span>
+              </div>
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* ------------------------------------------------------------- FLOATING INPUT BAR */}
+        <div className="p-4 md:px-8 shrink-0 bg-gradient-to-t from-[#080a11] via-[#080a11]/90 to-transparent">
+          <div className="max-w-3xl mx-auto">
+            {/* Staged File Badge */}
+            {stagedFile && (
+              <div className="mb-2 flex items-center justify-between p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-xs text-cyan-300 animate-fade-in">
+                <div className="flex items-center gap-2 truncate">
+                  <Paperclip className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span className="font-medium truncate">{stagedFile.name}</span>
+                  <span className="text-slate-400 font-mono">({(stagedFile.size / 1024).toFixed(0)} KB)</span>
+                </div>
+                <button
+                  onClick={() => setStagedFile(null)}
+                  className="p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white"
+                  title="Remove attachment"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {/* Input Capsule (ChatGPT / Claude Pill) */}
+            <div className="chat-input-capsule p-2 flex items-center gap-2">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="p-2 text-slate-400 hover:text-cyan-400 hover:bg-white/5 rounded-xl transition shrink-0"
+                title="Attach Document or Image to Query"
+              >
+                <Paperclip className="w-5 h-5" />
+              </button>
+              <input
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files?.[0]) setStagedFile(e.target.files[0]);
+                }}
+              />
+
+              <textarea
+                ref={textareaRef}
+                value={inputQuery}
+                onChange={(e) => setInputQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSendMessage();
+                  }
+                }}
+                placeholder={stagedFile ? `Ask a question about ${stagedFile.name}...` : "Ask anything about your documents... (Shift + Enter for newline)"}
+                rows={1}
+                className="flex-1 bg-transparent border-none outline-none text-sm text-white placeholder-slate-500 resize-none max-h-36 py-1.5 px-2"
+                style={{ minHeight: '24px' }}
+              />
+
+              <button
+                onClick={() => handleSendMessage()}
+                disabled={(!inputQuery.trim() && !stagedFile) || loading}
+                className="send-button"
+                title="Send query"
+              >
+                {loading ? (
+                  <RefreshCw className="w-4 h-4 text-black animate-spin" />
+                ) : (
+                  <ArrowRight className="w-4 h-4 text-black font-bold" />
+                )}
               </button>
             </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-sub)' }}>
-              Modality: <strong>{selectedCitation.modality}</strong> {selectedCitation.location?.page_number ? `· Page ${selectedCitation.location.page_number}` : ''}
+
+            <div className="mt-2 text-center text-[11px] text-slate-500">
+              Evidence AI searches across verified chunks with page numbers and deterministic citations.
             </div>
-            <div style={{
-              background: 'rgba(11, 14, 22, 0.9)', padding: '16px', borderRadius: '10px',
-              border: '1px solid var(--border-obsidian)', fontSize: '0.85rem', lineHeight: '1.6',
-              fontFamily: 'var(--font-mono)', color: 'var(--text-main)', maxHeight: '250px', overflowY: 'auto'
-            }}>
-              "{selectedCitation.excerpt}"
+          </div>
+        </div>
+      </main>
+
+      {/* ------------------------------------------------------------- MODAL 1: CHUNKS INSPECTOR */}
+      {inspectDoc && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-[#0c101d] border border-white/15 rounded-2xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Modal Header */}
+            <div className="p-4 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20">
+                  {getFileIcon(inspectDoc.filename)}
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white font-['Outfit']">{inspectDoc.filename}</h3>
+                  <p className="text-[11px] text-slate-400 font-mono">
+                    {inspectChunks.length} chunks indexed • {inspectDoc.file_size ? `${(inspectDoc.file_size / 1024).toFixed(0)} KB` : ''}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setInspectDoc(null)}
+                className="p-1.5 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Filter Bar */}
+            <div className="p-3 border-b border-white/10 bg-white/[0.01] flex flex-wrap items-center gap-3">
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Search chunk text..."
+                  value={chunkSearch}
+                  onChange={(e) => setChunkSearch(e.target.value)}
+                  className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              {availablePages.length > 1 && (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-slate-400">Page:</span>
+                  <select
+                    value={selectedPageFilter}
+                    onChange={(e) => setSelectedPageFilter(e.target.value)}
+                    className="bg-white/5 border border-white/10 rounded-xl px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500"
+                  >
+                    <option value="all">All Pages ({availablePages.length})</option>
+                    {availablePages.map(p => (
+                      <option key={p} value={String(p)}>Page {p}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* Chunks List */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {loadingChunks ? (
+                <div className="py-16 text-center text-slate-400 text-xs">
+                  <RefreshCw className="w-6 h-6 mx-auto animate-spin mb-2 text-cyan-400" />
+                  Loading document chunks...
+                </div>
+              ) : filteredChunks.length === 0 ? (
+                <div className="py-16 text-center text-slate-400 text-xs">
+                  No chunks match the current search or page filter.
+                </div>
+              ) : (
+                filteredChunks.map((chunk, idx) => (
+                  <div
+                    key={chunk.chunk_id || idx}
+                    className="p-3.5 rounded-xl border border-white/10 bg-white/[0.02] hover:border-cyan-500/30 hover:bg-white/[0.03] transition space-y-2"
+                  >
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-mono text-[11px] font-medium">
+                          Page {chunk.page}
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-slate-300 font-mono text-[11px]">
+                          Chunk #{chunk.chunk_index}
+                        </span>
+                        {chunk.section && (
+                          <span className="text-slate-400 text-[11px] truncate max-w-xs">
+                            • {chunk.section}
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => copyToClipboard(chunk.text, chunk.chunk_id || idx)}
+                        className="text-[11px] text-slate-400 hover:text-cyan-300 flex items-center gap-1"
+                      >
+                        {copiedId === (chunk.chunk_id || idx) ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        <span>Copy</span>
+                      </button>
+                    </div>
+                    <div className="text-xs text-slate-200 leading-relaxed font-sans whitespace-pre-wrap bg-black/30 p-2.5 rounded-lg border border-white/5">
+                      {chunk.text}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- MODAL 2: CITATION DETAILS */}
+      {activeCitationModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-[#0c101d] border border-cyan-500/30 rounded-2xl w-full max-w-xl p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-white/10">
+              <div className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-cyan-400" />
+                <h3 className="text-sm font-bold text-white font-['Outfit']">
+                  Citation [{activeCitationModal.citation_id}] Ground-Truth Excerpt
+                </h3>
+              </div>
+              <button
+                onClick={() => setActiveCitationModal(null)}
+                className="p-1 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-slate-400">File:</span>
+                <span className="font-semibold text-slate-200">{activeCitationModal.filename}</span>
+                {activeCitationModal.location?.page_number && (
+                  <span className="px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-mono text-[11px]">
+                    Page {activeCitationModal.location.page_number}
+                  </span>
+                )}
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-black/40 border border-white/10 text-xs text-slate-200 leading-relaxed font-sans">
+                {activeCitationModal.excerpt}
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={() => setActiveCitationModal(null)}
+                className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-semibold text-xs transition"
+              >
+                Done
+              </button>
             </div>
           </div>
         </div>
