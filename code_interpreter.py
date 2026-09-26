@@ -7,17 +7,21 @@ import urllib.request
 import json
 from config import settings
 
-def run_code_interpreter(query: str, csv_path: str) -> str:
+def run_code_interpreter(query: str, csv_paths: list[str]) -> str:
+    dfs_info = ""
+    for idx, path in enumerate(csv_paths):
+        dfs_info += f"df_{idx} = pd.read_csv('{path.replace(chr(92), '/')}')\n"
+
     prompt = f"""You are a Python Data Analyst. 
 The user wants to know: "{query}"
-There is a CSV file loaded as a pandas DataFrame named `df`.
-The path to the file is: {csv_path}
+The following CSV files are available and can be loaded as pandas DataFrames:
+{dfs_info}
+
 Write ONLY the python code to calculate the answer and print the final result.
 Do NOT include markdown formatting like ```python, just the raw code.
 Example:
 import pandas as pd
-df = pd.read_csv('{csv_path.replace(chr(92), '/')}')
-print(df['fare'].mean())
+{dfs_info}print(df_0['fare'].mean())
 """
     
     url = f"{settings.online_base_url}/chat/completions"
@@ -34,9 +38,14 @@ print(df['fare'].mean())
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {settings.openai_api_key}",
+            "User-Agent": "EvidenceAI/1.0",
         },
         method="POST"
     )
+
+    print("DEBUG URL:", url)
+    print("DEBUG MODEL:", settings.online_model)
+    print("DEBUG API KEY:", settings.openai_api_key[:10] + "...")
 
     try:
         with urllib.request.urlopen(req, timeout=settings.online_timeout) as res:
@@ -61,11 +70,11 @@ print(df['fare'].mean())
             output = buffer.getvalue().strip()
             if not output:
                 output = "Code executed successfully but printed nothing."
-            return f"Data Analysis Result:\n{output}"
+            return f"**Data Analysis Result:**\n\n```\n{output}\n```"
         except Exception as e:
-            return f"Error executing code:\n{e}"
+            return f"**Error executing code:**\n\n```\n{e}\n```"
         finally:
             sys.stdout = old_stdout
             
     except Exception as e:
-        return f"Error connecting to LLM for code generation: {e}"
+        return f"**Error connecting to LLM for code generation:**\n\n```\n{e}\n```"

@@ -142,11 +142,10 @@ def query(request: QueryRequest, backend: str | None = None) -> dict:
     math_keywords = ["average", "mean", "sum", "calculate", "count", "plot", "how many", "total", "max", "min"]
     if any(k in q_lower for k in math_keywords):
         if settings.documents_dir.exists():
-            csv_files = [f for f in os.listdir(settings.documents_dir) if f.endswith(".csv")]
+            csv_files = [str(settings.documents_dir / f) for f in os.listdir(settings.documents_dir) if f.endswith(".csv")]
             if csv_files:
                 from code_interpreter import run_code_interpreter
-                csv_path = str(settings.documents_dir / csv_files[-1])
-                answer = run_code_interpreter(request.query, csv_path)
+                answer = run_code_interpreter(request.query, csv_files)
                 return {
                     "answer": answer,
                     "retrieved_items": [],

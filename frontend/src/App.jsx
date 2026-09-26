@@ -242,8 +242,14 @@ function ProgressRow({ type }) {
   
   return (
     <div className="prog-row">
-      <div className="prog-text"><span>{msg}</span><span className="prog-perc">{Math.floor(p)}%</span></div>
-      <div className="prog-bar-bg"><div className="prog-bar-fill" style={{ width: p + '%' }}/></div>
+      <div className="prog-text">
+        <span>{msg}</span>
+        <div className="loading-row" style={{ marginLeft: '10px', marginTop: '2px' }}>
+          <div className="loading-dot" />
+          <div className="loading-dot" />
+          <div className="loading-dot" />
+        </div>
+      </div>
     </div>
   );
 }
