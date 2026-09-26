@@ -403,8 +403,7 @@ class RAGPipeline:
         mark = time.perf_counter()
         inspect_image = (
             pick_inspectable_image(final_evidence)
-            if (request.inference_mode is InferenceMode.LOCAL_VISION
-                and supports_vision(backend))
+            if supports_vision(backend)
             else None
         )
         try:

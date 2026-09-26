@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
+import './landing.css';
 import {
   FileText, Image as ImageIcon, Headphones, Plus, X, Send,
   ArrowUpRight, Settings as SettingsIcon, Paperclip, FileSpreadsheet,
   AlertCircle, ChevronRight, FolderOpen, MessageSquare, Trash2,
-  Home, PanelLeftClose, PanelLeft, User, Moon, Sun, Square, Mic, MicOff
+  Home, PanelLeftClose, PanelLeft, User, Moon, Sun, Square, Mic, MicOff,
+  Check, Play, FileCheck, Search, Link2, Shield
 } from 'lucide-react';
 
 const API = 'http://127.0.0.1:8000';
@@ -60,10 +62,148 @@ function LogoWide({ height = 24 }) {
   );
 }
 
+/* ── Landing Page ────────────────────────────────────────── */
+
+function LandingPage({ onGetStarted }) {
+  return (
+    <div className="landing-container">
+      <nav className="landing-nav">
+        <div className="landing-logo">
+          <LogoWide height={32} />
+        </div>
+        <div className="landing-links">
+          <a className="landing-link active">Home</a>
+          <a className="landing-link">Features</a>
+          <a className="landing-link">How it Works</a>
+          <a className="landing-link">Use Cases</a>
+          <a className="landing-link">Demo</a>
+          <a className="landing-link">About</a>
+        </div>
+        <button className="landing-btn-primary" onClick={onGetStarted}>
+          Get Started <ArrowUpRight size={16} />
+        </button>
+      </nav>
+
+      <div className="landing-hero">
+        <div className="landing-hero-left">
+          <div className="landing-badge">AI-Powered Document Intelligence</div>
+          <h1 className="landing-h1">Extract. Understand.<br/>Connect your <span className="highlight">Documents.</span></h1>
+          <p className="landing-p">
+            DocLink uses advanced AI to extract structured information from PDFs, images, and documents. Turn unorganized files into searchable, meaningful insights in seconds.
+          </p>
+          <div className="landing-actions">
+            <button className="landing-btn-primary" onClick={onGetStarted}>
+              Try DocLink Now <ArrowUpRight size={16} />
+            </button>
+            <button className="landing-btn-outline">
+              <Play size={16} /> Watch Demo
+            </button>
+          </div>
+          <div className="landing-checks">
+            <div className="landing-check"><div className="landing-check-icon"><Check size={12} color="white" strokeWidth={3}/></div> Multiple File Formats</div>
+            <div className="landing-check"><div className="landing-check-icon"><Check size={12} color="white" strokeWidth={3}/></div> AI-Powered Extraction</div>
+            <div className="landing-check"><div className="landing-check-icon"><Check size={12} color="white" strokeWidth={3}/></div> Accurate & Fast</div>
+          </div>
+        </div>
+        <div className="landing-hero-right">
+          <div className="landing-mockup">
+            <div className="landing-mockup-panel" style={{ position: 'relative' }}>
+              <div style={{ fontSize: '0.8rem', color: '#3b82f6', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><ImageIcon size={14}/> Upload Document</div>
+              <div style={{ background: '#fff', borderRadius: '4px', padding: '1rem', color: '#111827', height: '200px' }}>
+                <div style={{ fontWeight: 'bold', marginBottom: '0.5rem' }}>Invoice #2024-001</div>
+                <div style={{ fontSize: '0.8rem', opacity: 0.7 }}>Date: 12 Jan 2024</div>
+                <div style={{ fontSize: '0.8rem', opacity: 0.7 }}>Company: ACME Solutions</div>
+                <div style={{ marginTop: '1rem', borderTop: '1px solid #e5e7eb', paddingTop: '0.5rem', fontSize: '0.8rem' }}>Total: $52,000</div>
+              </div>
+              <div style={{ position: 'absolute', right: '-24px', top: '50%', transform: 'translateY(-50%)', color: '#a855f7', zIndex: 10 }}>
+                <ArrowUpRight size={32} />
+              </div>
+            </div>
+            <div className="landing-mockup-panel">
+              <div style={{ fontSize: '0.8rem', color: '#a855f7', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><FileCheck size={14}/> Extracted Information</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <div style={{ background: 'rgba(255,255,255,0.05)', padding: '0.75rem', borderRadius: '4px', fontSize: '0.8rem' }}>
+                  <div style={{ color: '#9ca3af', marginBottom: '0.25rem' }}>Invoice Number</div>
+                  <div>INV-2024-001</div>
+                </div>
+                <div style={{ background: 'rgba(255,255,255,0.05)', padding: '0.75rem', borderRadius: '4px', fontSize: '0.8rem' }}>
+                  <div style={{ color: '#9ca3af', marginBottom: '0.25rem' }}>Company</div>
+                  <div>ACME Solutions</div>
+                </div>
+                <div style={{ background: 'rgba(255,255,255,0.05)', padding: '0.75rem', borderRadius: '4px', fontSize: '0.8rem' }}>
+                  <div style={{ color: '#9ca3af', marginBottom: '0.25rem' }}>Total Amount</div>
+                  <div>$52,000</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="landing-floating-icon" style={{ top: '-10%', left: '10%', background: '#ef4444', color: 'white' }}>PDF</div>
+          <div className="landing-floating-icon" style={{ top: '20%', left: '-10%', background: '#3b82f6', color: 'white' }}>W</div>
+          <div className="landing-floating-icon" style={{ bottom: '10%', left: '-5%', background: '#10b981', color: 'white' }}>X</div>
+          <div className="landing-floating-icon" style={{ top: '10%', right: '-5%', background: '#a855f7', color: 'white' }}><ImageIcon size={24}/></div>
+          <div className="landing-floating-icon" style={{ bottom: '30%', right: '-10%', background: '#f59e0b', color: 'white' }}>TXT</div>
+        </div>
+      </div>
+
+      <div className="landing-features">
+        <div className="landing-feature-card">
+          <div className="landing-feature-icon"><FileText size={20}/></div>
+          <div className="landing-feature-title">Multi-Format Support</div>
+          <div className="landing-feature-desc">Works with PDF, Images, Word, Excel and more.</div>
+        </div>
+        <div className="landing-feature-card">
+          <div className="landing-feature-icon"><Search size={20}/></div>
+          <div className="landing-feature-title">AI-Powered Extraction</div>
+          <div className="landing-feature-desc">Automatically extracts key information using AI.</div>
+        </div>
+        <div className="landing-feature-card">
+          <div className="landing-feature-icon"><Shield size={20}/></div>
+          <div className="landing-feature-title">Smart Search</div>
+          <div className="landing-feature-desc">Find information instantly across all your documents.</div>
+        </div>
+        <div className="landing-feature-card">
+          <div className="landing-feature-icon"><Link2 size={20}/></div>
+          <div className="landing-feature-title">Contextual Understanding</div>
+          <div className="landing-feature-desc">Connects related information across multiple files.</div>
+        </div>
+      </div>
+
+      <div className="landing-bottom">
+        <div className="landing-bottom-left">
+          <h2 className="landing-bottom-h2">Trusted by Students, Researchers and <span className="highlight">Professionals</span></h2>
+          <p className="landing-bottom-p">Save hours of manual work. Let DocLink read, understand and organize your documents for you.</p>
+          <div className="landing-metrics">
+            <div><div className="landing-metric-val">99%</div><div className="landing-metric-lbl">Extraction Accuracy</div></div>
+            <div><div className="landing-metric-val">5+</div><div className="landing-metric-lbl">File Formats</div></div>
+            <div><div className="landing-metric-val">10x</div><div className="landing-metric-lbl">Faster Processing</div></div>
+            <div><div className="landing-metric-val">100%</div><div className="landing-metric-lbl">Secure & Private</div></div>
+          </div>
+        </div>
+        <div className="landing-bottom-right">
+          <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.5rem' }}>
+            <div style={{ background: 'rgba(255,255,255,0.1)', padding: '0.5rem', borderRadius: '8px' }}><FolderOpen size={16}/></div>
+            <div>
+              <div style={{ fontWeight: '600', fontSize: '0.9rem' }}>Supported File Formats</div>
+              <div style={{ fontSize: '0.8rem', color: '#9ca3af' }}>Upload and analyze documents in various formats</div>
+            </div>
+          </div>
+          <div className="landing-formats-grid">
+            <div className="landing-format-item"><div className="landing-format-icon" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>PDF</div> PDF</div>
+            <div className="landing-format-item"><div className="landing-format-icon" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6' }}>W</div> Word</div>
+            <div className="landing-format-item"><div className="landing-format-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>X</div> Excel</div>
+            <div className="landing-format-item"><div className="landing-format-icon" style={{ background: 'rgba(168, 85, 247, 0.1)', color: '#a855f7' }}><ImageIcon size={18}/></div> Images</div>
+            <div className="landing-format-item"><div className="landing-format-icon" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#f59e0b' }}>TXT</div> Text</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── App ─────────────────────────────────────────────────── */
 
 export default function App() {
-  const [page, setPage] = useState('chat');
+  const [page, setPage] = useState('landing');
   const [sessions, setSessions] = useState(() => {
     try { return JSON.parse(localStorage.getItem('dl_sessions') || '[]'); } catch { return []; }
   });
@@ -131,11 +271,14 @@ export default function App() {
     window.addEventListener('drop', dDrop);
     return () => { window.removeEventListener('dragover', dOver); window.removeEventListener('dragleave', dLeave); window.removeEventListener('drop', dDrop); };
   }, []);
+  if (page === 'landing') {
+    return <LandingPage onGetStarted={() => { setPage('chat'); ensure(); }} />;
+  }
 
   return (
     <div className="shell">
       <aside className={`sidebar ${sidebarOpen ? '' : 'collapsed'}`}>
-        <div className="sb-brand">
+        <div className="sb-brand" style={{ cursor: 'pointer' }} onClick={() => setPage('landing')} title="Go to Landing Page">
           <LogoWide height={24} />
         </div>
 
@@ -305,10 +448,11 @@ function ChatView({ msgs, setMsgs, sources, cite, setCite, backend, topK, rerank
     }
 
     try {
+      const queryText = files.length > 0 ? `${q || 'Summarize the uploaded files.'} (Context: ${files.map(f => f.name).join(', ')})` : (q || 'Summarize the uploaded files.');
       const res = await fetch(`${API}/query?backend=${backend}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q || 'Summarize the uploaded files.', top_k: +topK, rerank_top_k: +rerankK, inference_mode: 'local', query_modality: 'text' }),
+        body: JSON.stringify({ query: queryText, top_k: +topK, rerank_top_k: +rerankK, inference_mode: 'local', query_modality: 'text' }),
         signal: ctrl.signal,
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -431,7 +575,7 @@ function Comp({ text, setText, files, addFiles, rmFile, send, stop, keyDown, loa
       <div className="comp-row">
         <input ref={fileRef} type="file" multiple onChange={addFiles} style={{ display: 'none' }} accept=".pdf,.doc,.docx,.txt,.csv,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.tif,.wav,.mp3,.m4a,.flac,.ogg"/>
         <button className="comp-attach" onClick={() => fileRef.current?.click()} title="Attach files"><Paperclip size={17}/></button>
-        <button className="comp-attach" style={{ color: listening ? 'var(--red)' : 'inherit' }} onClick={toggleListen} title="Voice dictation">{listening ? <MicOff size={17}/> : <Mic size={17}/>}</button>
+        <button className="comp-attach" style={{ color: listening ? 'var(--red)' : 'inherit' }} onClick={toggleListen} title="Voice dictation"><Mic size={17}/></button>
         <textarea ref={taRef} className="comp-input" rows={1} placeholder={listening ? "Listening..." : "Ask anything about your documents…"} value={text} onChange={e => setText(e.target.value)} onKeyDown={keyDown}/>
         {loading ? (
           <button className="comp-send stop-btn" onClick={stop} title="Stop generation" style={{ backgroundColor: '#ff4444' }}><Square size={14} fill="currentColor"/></button>
@@ -555,7 +699,7 @@ function SourcesPage({ sources, filter, setFilter, fetchSources }) {
                   <div className="src-meta"><span>{s.source_type?.toUpperCase()}</span>{s.file_size && <span>{fSize(s.file_size)}</span>}</div>
                 </div>
                 <span className="src-status">Indexed</span>
-                <a href={`${API}/source/${s.source_id}/file`} target="_blank" rel="noreferrer" className="src-dl" title="Open"><ArrowUpRight size={14}/></a>
+                <a href={`${API}/source/${s.source_id}/file`} target="_blank" rel="noreferrer" className="src-dl" title="View Document" style={{ display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none', background: 'var(--border)', padding: '4px 8px', borderRadius: '4px', color: 'var(--text)', fontSize: '12px' }}>Open</a>
                 <button className="src-dl" style={{ color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer', marginLeft: 8 }} onClick={() => handleDelete(s.source_id)} title="Delete"><Trash2 size={14}/></button>
               </div>
             );
