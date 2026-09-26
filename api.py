@@ -134,17 +134,30 @@ async def ingest(files: list[UploadFile] = File(...)) -> dict:
 
 @app.post("/query")
 def query(request: QueryRequest, backend: str | None = None) -> dict:
-    """Text query against the index.
-
-    `backend` ("offline" | "online") selects the inference provider and
-    defaults to settings.inference_backend. It is a query parameter rather
-    than a QueryRequest field so the locked schemas.py contract is unchanged.
-
-    The response is the QueryResponse contract plus a sibling
-    `technical_detail` string, which carries provider error detail for a
-    "Technical details" view without altering QueryResponse itself.
-    """
     from rag_pipeline import last_technical_detail
+    from config import settings
+    import os
+
+    q_lower = request.query.lower()
+    math_keywords = ["average", "mean", "sum", "calculate", "count", "plot", "how many", "total", "max", "min"]
+    if any(k in q_lower for k in math_keywords):
+        if settings.documents_dir.exists():
+            csv_files = [f for f in os.listdir(settings.documents_dir) if f.endswith(".csv")]
+            if csv_files:
+                from code_interpreter import run_code_interpreter
+                csv_path = str(settings.documents_dir / csv_files[-1])
+                answer = run_code_interpreter(request.query, csv_path)
+                return {
+                    "answer": answer,
+                    "retrieved_items": [],
+                    "relationships": [],
+                    "abstained": False,
+                    "confidence": 1.0,
+                    "error_code": None,
+                    "query_representation": request.query,
+                    "latency_ms": {},
+                    "technical_detail": None,
+                }
 
     response = get_pipeline().query(request, backend=backend)
     return {

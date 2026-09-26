@@ -3,7 +3,7 @@ import {
   FileText, Image as ImageIcon, Headphones, Plus, X, Send,
   ArrowUpRight, Settings as SettingsIcon, Paperclip, FileSpreadsheet,
   AlertCircle, ChevronRight, FolderOpen, MessageSquare, Trash2,
-  Home, PanelLeftClose, PanelLeft, User, Moon, Sun
+  Home, PanelLeftClose, PanelLeft, User, Moon, Sun, Square
 } from 'lucide-react';
 
 const API = 'http://127.0.0.1:8000';
@@ -265,6 +265,8 @@ function ChatView({ msgs, setMsgs, sources, cite, setCite, backend, topK, rerank
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [msgs, loading]);
   useEffect(() => { const t = taRef.current; if (t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 160) + 'px'; } }, [text]);
 
+  const [abortCtrl, setAbortCtrl] = useState(null);
+
   const send = async () => {
     const q = text.trim();
     if (!q && !files.length) return;
@@ -276,14 +278,22 @@ function ChatView({ msgs, setMsgs, sources, cite, setCite, backend, topK, rerank
     setLoading(true);
     setErr(null);
 
+    const ctrl = new AbortController();
+    setAbortCtrl(ctrl);
+
     if (files.length) {
       setIngesting(true);
       try {
         const fd = new FormData();
         files.forEach(f => fd.append('files', f));
-        await fetch(`${API}/ingest`, { method: 'POST', body: fd });
+        await fetch(`${API}/ingest`, { method: 'POST', body: fd, signal: ctrl.signal });
         await fetchSources();
-      } catch {}
+      } catch (e) {
+        if (e.name === 'AbortError') {
+          setMsgs(p => [...p, { role: 'ai', text: 'Generation paused.', abstained: true }]);
+          setLoading(false); setIngesting(false); setFiles([]); setAbortCtrl(null); return;
+        }
+      }
       setIngesting(false);
     }
 
@@ -292,14 +302,23 @@ function ChatView({ msgs, setMsgs, sources, cite, setCite, backend, topK, rerank
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: q || 'Summarize the uploaded files.', top_k: +topK, rerank_top_k: +rerankK, inference_mode: 'local', query_modality: 'text' }),
+        signal: ctrl.signal,
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const d = await res.json();
       setMsgs(p => [...p, { role: 'ai', text: d.answer, citations: d.citations || [], abstained: d.abstained, confidence: d.confidence }]);
     } catch (e) {
-      setErr(e.message);
-      setMsgs(p => [...p, { role: 'ai', text: 'Something went wrong. Please try again.', error: true }]);
-    } finally { setLoading(false); setFiles([]); }
+      if (e.name === 'AbortError') {
+        setMsgs(p => [...p, { role: 'ai', text: 'Generation paused.', abstained: true }]);
+      } else {
+        setErr(e.message);
+        setMsgs(p => [...p, { role: 'ai', text: 'Something went wrong. Please try again.', error: true }]);
+      }
+    } finally { setLoading(false); setFiles([]); setAbortCtrl(null); }
+  };
+
+  const stop = () => {
+    if (abortCtrl) abortCtrl.abort();
   };
 
   const keyDown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
@@ -320,7 +339,7 @@ function ChatView({ msgs, setMsgs, sources, cite, setCite, backend, topK, rerank
             <h1 className="home-h1">Unlock insights from your <span className="highlight">documents.</span></h1>
 
             <div className="comp-wrap center">
-              <Comp text={text} setText={setText} files={files} addFiles={addFiles} rmFile={rmFile} send={send} keyDown={keyDown} loading={loading} taRef={taRef} fileRef={fileRef}/>
+              <Comp text={text} setText={setText} files={files} addFiles={addFiles} rmFile={rmFile} send={send} stop={stop} keyDown={keyDown} loading={loading} taRef={taRef} fileRef={fileRef}/>
             </div>
 
             <div className="home-suggestions">
@@ -350,7 +369,7 @@ function ChatView({ msgs, setMsgs, sources, cite, setCite, backend, topK, rerank
 
       {has && (
         <div className="comp-wrap">
-          <Comp text={text} setText={setText} files={files} addFiles={addFiles} rmFile={rmFile} send={send} keyDown={keyDown} loading={loading} taRef={taRef} fileRef={fileRef}/>
+          <Comp text={text} setText={setText} files={files} addFiles={addFiles} rmFile={rmFile} send={send} stop={stop} keyDown={keyDown} loading={loading} taRef={taRef} fileRef={fileRef}/>
         </div>
       )}
     </>
@@ -359,7 +378,7 @@ function ChatView({ msgs, setMsgs, sources, cite, setCite, backend, topK, rerank
 
 /* ── Composer ────────────────────────────────────────────── */
 
-function Comp({ text, setText, files, addFiles, rmFile, send, keyDown, loading, taRef, fileRef }) {
+function Comp({ text, setText, files, addFiles, rmFile, send, stop, keyDown, loading, taRef, fileRef }) {
   return (
     <div className="comp">
       {files.length > 0 && (
@@ -374,7 +393,11 @@ function Comp({ text, setText, files, addFiles, rmFile, send, keyDown, loading, 
         <input ref={fileRef} type="file" multiple onChange={addFiles} style={{ display: 'none' }} accept=".pdf,.doc,.docx,.txt,.csv,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.tif,.wav,.mp3,.m4a,.flac,.ogg"/>
         <button className="comp-attach" onClick={() => fileRef.current?.click()} title="Attach files"><Paperclip size={17}/></button>
         <textarea ref={taRef} className="comp-input" rows={1} placeholder="Ask anything about your documents…" value={text} onChange={e => setText(e.target.value)} onKeyDown={keyDown}/>
-        <button className="comp-send" onClick={send} disabled={loading || (!text.trim() && !files.length)} title="Send"><Send size={15}/></button>
+        {loading ? (
+          <button className="comp-send stop-btn" onClick={stop} title="Stop generation" style={{ backgroundColor: '#ff4444' }}><Square size={14} fill="currentColor"/></button>
+        ) : (
+          <button className="comp-send" onClick={send} disabled={!text.trim() && !files.length} title="Send"><Send size={15}/></button>
+        )}
       </div>
     </div>
   );
@@ -403,22 +426,6 @@ function Msg({ m, onCite }) {
         <div className="msg-ai-err"><AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }}/>{m.text}</div>
       ) : (
         <div className="msg-ai-body">{m.text}</div>
-      )}
-      {m.citations?.length > 0 && (
-        <div className="cites">
-          <div className="cites-label">Sources</div>
-          <div className="cites-list">
-            {m.citations.map((c, i) => (
-              <div key={i} className="cite" onClick={() => onCite(c)}>
-                <div className="cite-n">{c.citation_id || i + 1}</div>
-                <span className="cite-name">{c.filename}</span>
-                {locLabel(c) && <span className="cite-loc">· {locLabel(c)}</span>}
-                {c.excerpt && <span className="cite-ex">— {c.excerpt}</span>}
-                <ChevronRight size={13} className="cite-arrow"/>
-              </div>
-            ))}
-          </div>
-        </div>
       )}
     </div>
   );
