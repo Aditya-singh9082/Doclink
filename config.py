@@ -100,8 +100,8 @@ class Settings(BaseSettings):
     torch_device: str = "cpu"
 
     # ---- Chunking -----------------------------------------------------
-    chunk_size: int = 800
-    chunk_overlap: int = 100
+    chunk_size: int = 1500
+    chunk_overlap: int = 200
     min_chunk_chars: int = 40
 
     # ---- Retrieval ----------------------------------------------------

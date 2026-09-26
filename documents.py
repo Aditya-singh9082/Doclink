@@ -307,31 +307,8 @@ def _extract_pdf_standard(path: Path, warnings: list[str]) -> list[Extracted]:
 
 def _extract_pdf(path: Path, warnings: list[str]) -> list[Extracted]:
     """Classify PDF and route:
-    - Clean digital text -> fast direct extraction
-    - Has images / scanned / tables -> Docling deep layout, image & table parsing
+    - Use fast PyMuPDF extraction for maximum speed
     """
-    try:
-        info = classify_pdf(path)
-        logger.info(
-            "PDF classification for %s: %s (images: %d, scanned: %s, tables: %s)",
-            path.name, info["category"], info["image_count"], info["is_scanned"], info["has_tables"],
-        )
-
-        if info["has_images"] or info["is_scanned"] or info["has_tables"]:
-            try:
-                docling_out = _extract_with_docling(path, warnings, info)
-                if docling_out:
-                    warnings.append(
-                        f"Docling processed {path.name}: extracted {len(docling_out)} chunks "
-                        f"across {info['pages']} pages ({info['image_count']} images, category: {info['category']})."
-                    )
-                    return docling_out
-            except Exception as exc:
-                warnings.append(f"Docling parsing failed ({exc}); falling back to standard extractor.")
-                logger.warning("Docling failed for %s: %s; falling back", path.name, exc)
-    except Exception as exc:
-        logger.warning("PDF classification error for %s: %s", path.name, exc)
-
     return _extract_pdf_standard(path, warnings)
 
 
