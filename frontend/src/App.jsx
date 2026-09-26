@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
 import {
   FileText, Image as ImageIcon, Headphones, Plus, X, Send,
   ArrowUpRight, Settings as SettingsIcon, Paperclip, FileSpreadsheet,
@@ -431,7 +432,9 @@ function Msg({ m, onCite }) {
       ) : m.error ? (
         <div className="msg-ai-err"><AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }}/>{m.text}</div>
       ) : (
-        <div className="msg-ai-body">{m.text}</div>
+        <div className="msg-ai-body">
+          <ReactMarkdown>{m.text}</ReactMarkdown>
+        </div>
       )}
     </div>
   );
