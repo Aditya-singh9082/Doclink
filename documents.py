@@ -287,6 +287,25 @@ def _extract_pdf_standard(path: Path, warnings: list[str]) -> list[Extracted]:
                 ocr_text = _ocr_pdf_page(page, warnings, page_index)
                 if len(ocr_text) > len(text):
                     text, ocr_used = ocr_text, True
+            else:
+                # If page has text but also has images, OCR those images specifically
+                image_list = page.get_images(full=True)
+                for img in image_list:
+                    try:
+                        xref = img[0]
+                        pix = pymupdf.Pixmap(doc, xref)
+                        if pix.n - pix.alpha > 3:
+                            pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+                        import io
+                        from PIL import Image
+                        import pytesseract
+                        pytesseract.pytesseract.tesseract_cmd = settings.tesseract_cmd
+                        img_pil = Image.open(io.BytesIO(pix.tobytes("png")))
+                        img_text = pytesseract.image_to_string(img_pil).strip()
+                        if img_text:
+                            text += f"\n\n[Image Text]: {img_text}"
+                    except Exception as e:
+                        pass
 
             if not text:
                 continue

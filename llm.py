@@ -79,13 +79,15 @@ DISCOVERY_MARKERS = (
     "what was the document about", "what is the document about",
     "what is this document about", "what is this about", "what was this about",
     "what does the document say", "what does this say", "what is this",
-    "summarize", "summary", "overview", "explain the document",
+    "summarize", "summarise", "summary", "overview", "explain the document",
     "tell me about", "what is this file about", "what was this file about",
     "what is the pdf about", "what was the pdf about", "what does the pdf say",
-    "what is in the pdf", "about the pdf", "summarize the pdf", "explain the pdf",
+    "what is in the pdf", "about the pdf", "summarize the pdf", "summarise the pdf", "explain the pdf",
     "what is the docx about", "what was the docx about", "what does the docx say",
-    "what is in the docx", "about the docx", "summarize the docx", "explain the docx",
-    "the pdf", "the docx", "the doc",
+    "what is in the docx", "about the docx", "summarize the docx", "summarise the docx", "explain the docx",
+    "what is the image about", "what was the image about", "what does the image say",
+    "what is in the image", "about the image", "summarize the image", "summarise the image", "explain the image",
+    "the pdf", "the docx", "the doc", "the image", "the picture", "this image", "this picture"
 )
 
 

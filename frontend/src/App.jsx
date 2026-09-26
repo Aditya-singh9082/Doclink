@@ -4,7 +4,7 @@ import {
   FileText, Image as ImageIcon, Headphones, Plus, X, Send,
   ArrowUpRight, Settings as SettingsIcon, Paperclip, FileSpreadsheet,
   AlertCircle, ChevronRight, FolderOpen, MessageSquare, Trash2,
-  Home, PanelLeftClose, PanelLeft, User, Moon, Sun, Square
+  Home, PanelLeftClose, PanelLeft, User, Moon, Sun, Square, Mic, MicOff
 } from 'lucide-react';
 
 const API = 'http://127.0.0.1:8000';
@@ -386,6 +386,38 @@ function ChatView({ msgs, setMsgs, sources, cite, setCite, backend, topK, rerank
 /* ── Composer ────────────────────────────────────────────── */
 
 function Comp({ text, setText, files, addFiles, rmFile, send, stop, keyDown, loading, taRef, fileRef }) {
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef(null);
+
+  const toggleListen = () => {
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Speech recognition is not supported in this browser.");
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.onresult = (e) => {
+      let finalTranscript = '';
+      for (let i = e.resultIndex; i < e.results.length; ++i) {
+        if (e.results[i].isFinal) finalTranscript += e.results[i][0].transcript;
+      }
+      if (finalTranscript) {
+        setText(prev => (prev + ' ' + finalTranscript).trim());
+      }
+    };
+    recognition.onend = () => setListening(false);
+    recognition.start();
+    recognitionRef.current = recognition;
+    setListening(true);
+  };
+
   return (
     <div className="comp">
       {files.length > 0 && (
@@ -399,7 +431,8 @@ function Comp({ text, setText, files, addFiles, rmFile, send, stop, keyDown, loa
       <div className="comp-row">
         <input ref={fileRef} type="file" multiple onChange={addFiles} style={{ display: 'none' }} accept=".pdf,.doc,.docx,.txt,.csv,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.tif,.wav,.mp3,.m4a,.flac,.ogg"/>
         <button className="comp-attach" onClick={() => fileRef.current?.click()} title="Attach files"><Paperclip size={17}/></button>
-        <textarea ref={taRef} className="comp-input" rows={1} placeholder="Ask anything about your documents…" value={text} onChange={e => setText(e.target.value)} onKeyDown={keyDown}/>
+        <button className="comp-attach" style={{ color: listening ? 'var(--red)' : 'inherit' }} onClick={toggleListen} title="Voice dictation">{listening ? <MicOff size={17}/> : <Mic size={17}/>}</button>
+        <textarea ref={taRef} className="comp-input" rows={1} placeholder={listening ? "Listening..." : "Ask anything about your documents…"} value={text} onChange={e => setText(e.target.value)} onKeyDown={keyDown}/>
         {loading ? (
           <button className="comp-send stop-btn" onClick={stop} title="Stop generation" style={{ backgroundColor: '#ff4444' }}><Square size={14} fill="currentColor"/></button>
         ) : (
