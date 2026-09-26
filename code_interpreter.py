@@ -3,15 +3,11 @@ import io
 import sys
 import pandas as pd
 from pathlib import Path
-from openai import OpenAI
+import urllib.request
+import json
 from config import settings
 
 def run_code_interpreter(query: str, csv_path: str) -> str:
-    client = OpenAI(
-        api_key=settings.openai_api_key,
-        base_url=settings.online_base_url,
-    )
-    
     prompt = f"""You are a Python Data Analyst. 
 The user wants to know: "{query}"
 There is a CSV file loaded as a pandas DataFrame named `df`.
@@ -24,14 +20,30 @@ df = pd.read_csv('{csv_path.replace(chr(92), '/')}')
 print(df['fare'].mean())
 """
     
+    url = f"{settings.online_base_url}/chat/completions"
+    payload = {
+        "model": settings.online_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 300,
+        "temperature": 0.0
+    }
+    
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {settings.openai_api_key}",
+        },
+        method="POST"
+    )
+
     try:
-        response = client.chat.completions.create(
-            model=settings.online_model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=300,
-            temperature=0.0
-        )
-        code = response.choices[0].message.content.strip()
+        with urllib.request.urlopen(req, timeout=settings.online_timeout) as res:
+            body = res.read().decode("utf-8")
+            response_json = json.loads(body)
+            code = response_json["choices"][0]["message"]["content"].strip()
+            
         if code.startswith('```python'):
             code = code[9:]
         if code.startswith('```'):
