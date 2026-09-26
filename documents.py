@@ -140,7 +140,141 @@ def _mime_for(source_type: SourceType) -> str:
 Extracted = tuple[str, SourceLocation, dict]
 
 
-def _extract_pdf(path: Path, warnings: list[str]) -> list[Extracted]:
+def classify_pdf(path: Path) -> dict:
+    """Analyze PDF structure: clean text, scanned, or image/table-heavy, as per architecture."""
+    import pymupdf
+
+    info = {
+        "pages": 0,
+        "has_images": False,
+        "image_count": 0,
+        "is_scanned": False,
+        "has_tables": False,
+        "category": "clean_text",
+    }
+    with pymupdf.open(path) as doc:
+        info["pages"] = len(doc)
+        total_images = sum(len(page.get_images()) for page in doc)
+        info["image_count"] = total_images
+        info["has_images"] = total_images > 0
+
+        total_chars = sum(len(page.get_text("text").strip()) for page in doc)
+        avg_chars = total_chars / max(1, len(doc))
+        info["is_scanned"] = avg_chars < MIN_PAGE_CHARS_BEFORE_OCR
+
+        try:
+            for page in doc:
+                tables = page.find_tables()
+                if tables and len(tables.tables) > 0:
+                    info["has_tables"] = True
+                    break
+        except Exception:
+            pass
+
+    if info["has_images"]:
+        info["category"] = "has_images"
+    elif info["is_scanned"]:
+        info["category"] = "scanned"
+    elif info["has_tables"]:
+        info["category"] = "table_heavy"
+    else:
+        info["category"] = "clean_text"
+
+    return info
+
+
+def _extract_with_docling(path: Path, warnings: list[str], info: dict) -> list[Extracted]:
+    """Extract complex PDFs with embedded images, scanned pages, or structured tables using Docling."""
+    try:
+        from docling.document_converter import DocumentConverter
+        from docling_core.types.doc import TableItem, PictureItem
+    except ImportError as e:
+        warnings.append(f"Docling not available: {e}")
+        return []
+
+    logger.info(
+        "Extracting %s with Docling (images: %d, tables: %s, category: %s)",
+        path.name, info["image_count"], info["has_tables"], info["category"],
+    )
+    converter = DocumentConverter()
+    conv_res = converter.convert(str(path))
+    doc = conv_res.document
+
+    pages_items: dict[int, list[tuple[str, dict]]] = {}
+    for item, _level in doc.iterate_items():
+        page = item.prov[0].page_no if (hasattr(item, "prov") and item.prov) else 1
+        is_table = isinstance(item, TableItem)
+        is_picture = isinstance(item, PictureItem)
+
+        if is_table:
+            text = item.export_to_markdown(doc=doc).strip()
+        elif hasattr(item, "text"):
+            text = item.text.strip()
+        elif is_picture and hasattr(item, "caption") and item.caption:
+            text = f"[Figure on Page {page}: {item.caption.text.strip()}]"
+        else:
+            text = ""
+
+        if text:
+            pages_items.setdefault(page, []).append((
+                text,
+                {"is_table": is_table, "has_image": is_picture or info["has_images"]},
+            ))
+
+    out: list[Extracted] = []
+    for page_no in sorted(pages_items.keys()):
+        items_on_page = pages_items[page_no]
+        current_text_buf: list[str] = []
+        for text, meta in items_on_page:
+            if meta.get("is_table"):
+                if current_text_buf:
+                    combined = " ".join(current_text_buf)
+                    for chunk in chunk_text(combined):
+                        out.append((
+                            chunk,
+                            SourceLocation(page_number=page_no),
+                            {
+                                "page": page_no,
+                                "page_number": page_no,
+                                "extractor": "docling",
+                                "has_images": info["has_images"],
+                            },
+                        ))
+                    current_text_buf.clear()
+                # Tables stay intact as dedicated searchable chunks
+                out.append((
+                    text,
+                    SourceLocation(page_number=page_no, section="Table"),
+                    {
+                        "page": page_no,
+                        "page_number": page_no,
+                        "is_table": True,
+                        "extractor": "docling",
+                        "has_images": info["has_images"],
+                    },
+                ))
+            else:
+                current_text_buf.append(text)
+
+        if current_text_buf:
+            combined = " ".join(current_text_buf)
+            for chunk in chunk_text(combined):
+                out.append((
+                    chunk,
+                    SourceLocation(page_number=page_no),
+                    {
+                        "page": page_no,
+                        "page_number": page_no,
+                        "extractor": "docling",
+                        "has_images": info["has_images"],
+                    },
+                ))
+
+    return out
+
+
+def _extract_pdf_standard(path: Path, warnings: list[str]) -> list[Extracted]:
+    """Standard fast PyMuPDF extraction for clean digital text PDFs."""
     import pymupdf
 
     out: list[Extracted] = []
@@ -165,9 +299,40 @@ def _extract_pdf(path: Path, warnings: list[str]) -> list[Extracted]:
                         "page_number": page_index,
                         "chunk_in_page": chunk_idx,
                         "ocr_used": ocr_used,
+                        "extractor": "pymupdf",
                     },
                 ))
     return out
+
+
+def _extract_pdf(path: Path, warnings: list[str]) -> list[Extracted]:
+    """Classify PDF and route:
+    - Clean digital text -> fast direct extraction
+    - Has images / scanned / tables -> Docling deep layout, image & table parsing
+    """
+    try:
+        info = classify_pdf(path)
+        logger.info(
+            "PDF classification for %s: %s (images: %d, scanned: %s, tables: %s)",
+            path.name, info["category"], info["image_count"], info["is_scanned"], info["has_tables"],
+        )
+
+        if info["has_images"] or info["is_scanned"] or info["has_tables"]:
+            try:
+                docling_out = _extract_with_docling(path, warnings, info)
+                if docling_out:
+                    warnings.append(
+                        f"Docling processed {path.name}: extracted {len(docling_out)} chunks "
+                        f"across {info['pages']} pages ({info['image_count']} images, category: {info['category']})."
+                    )
+                    return docling_out
+            except Exception as exc:
+                warnings.append(f"Docling parsing failed ({exc}); falling back to standard extractor.")
+                logger.warning("Docling failed for %s: %s; falling back", path.name, exc)
+    except Exception as exc:
+        logger.warning("PDF classification error for %s: %s", path.name, exc)
+
+    return _extract_pdf_standard(path, warnings)
 
 
 def _ocr_pdf_page(page, warnings: list[str], page_index: int) -> str:
