@@ -478,6 +478,16 @@ function SourcesPage({ sources, filter, setFilter, fetchSources }) {
     e.target.value = '';
   };
 
+  const handleDelete = async (sourceId) => {
+    if (!window.confirm("Are you sure you want to delete this source?")) return;
+    try {
+      await fetch(`${API}/source/${sourceId}`, { method: 'DELETE' });
+      await fetchSources();
+    } catch (e) {
+      console.error("Failed to delete source", e);
+    }
+  };
+
   const filtered = sources.filter(s => s.filename.toLowerCase().includes(filter.toLowerCase()));
 
   return (
@@ -510,6 +520,7 @@ function SourcesPage({ sources, filter, setFilter, fetchSources }) {
                 </div>
                 <span className="src-status">Indexed</span>
                 <a href={`${API}/source/${s.source_id}/file`} target="_blank" rel="noreferrer" className="src-dl" title="Open"><ArrowUpRight size={14}/></a>
+                <button className="src-dl" style={{ color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer', marginLeft: 8 }} onClick={() => handleDelete(s.source_id)} title="Delete"><Trash2 size={14}/></button>
               </div>
             );
           })}
