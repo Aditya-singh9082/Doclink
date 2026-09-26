@@ -1,1035 +1,578 @@
-import React, { useState, useEffect, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Sparkles, Send, Paperclip, PanelLeftClose, PanelLeft, Plus,
-  FileText, Image as ImageIcon, Headphones, File, Trash2, Copy,
-  Check, ChevronDown, ChevronRight, ExternalLink, RefreshCw,
-  Search, Shield, Zap, Info, X, Layers, Cpu, Cloud, UploadCloud,
-  Eye, FileCheck, ArrowRight
+  FileText, Image as ImageIcon, Headphones, Plus, X, Send,
+  ArrowUpRight, Settings as SettingsIcon, Paperclip, FileSpreadsheet,
+  AlertCircle, ChevronRight, FolderOpen, MessageSquare, Trash2,
+  Home, PanelLeftClose, PanelLeft, User, Moon, Sun
 } from 'lucide-react';
 
-const API_BASE = 'http://127.0.0.1:8000';
+const API = 'http://127.0.0.1:8000';
+
+/* ── helpers ─────────────────────────────────────────────── */
+
+const fIcon = (n) => {
+  if (!n) return FileText;
+  const e = n.split('.').pop().toLowerCase();
+  if ('png jpg jpeg webp bmp tiff tif'.split(' ').includes(e)) return ImageIcon;
+  if ('wav mp3 m4a flac ogg'.split(' ').includes(e)) return Headphones;
+  if (e === 'csv') return FileSpreadsheet;
+  return FileText;
+};
+
+const fSize = (b) => {
+  if (!b) return '';
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b / 1024).toFixed(0) + ' KB';
+  return (b / 1048576).toFixed(1) + ' MB';
+};
+
+const locLabel = (c) => {
+  if (c.location?.page_number) return 'p.' + c.location.page_number;
+  if (c.location?.section) return c.location.section;
+  if (c.location?.timestamp_start != null) {
+    const f = (s) => `${String(Math.floor(Math.round(s)/60)).padStart(2,'0')}:${String(Math.round(s)%60).padStart(2,'0')}`;
+    return f(c.location.timestamp_start) + '–' + f(c.location.timestamp_end);
+  }
+  return '';
+};
+
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+const chatTitle = (msgs) => {
+  const u = msgs.find(m => m.role === 'user');
+  if (!u) return 'New Chat';
+  const t = u.text || '';
+  return t.length > 36 ? t.slice(0, 36) + '…' : t || 'New Chat';
+};
+
+/* ── logo ────────────────────────────────────────────────── */
+
+function Logo({ size = 16, light = false }) {
+  return (
+    <img src="/logo.jpg" alt="DocLink Logo" style={{ width: size, height: size, objectFit: 'contain', borderRadius: '4px', background: 'white' }} />
+  );
+}
+
+function LogoWide({ height = 24 }) {
+  return (
+    <img src="/logo-wide.png" alt="DocLink Logo" className="logo-wide" style={{ height: height, width: 'auto', objectFit: 'contain' }} />
+  );
+}
+
+/* ── App ─────────────────────────────────────────────────── */
 
 export default function App() {
-  // Navigation & UI state
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [activeSessionId, setActiveSessionId] = useState('default');
+  const [page, setPage] = useState('chat');
   const [sessions, setSessions] = useState(() => {
-    const saved = localStorage.getItem('evidence_sessions');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { }
-    }
-    return [{
-      id: 'default',
-      title: 'New Investigation',
-      createdAt: new Date().toISOString(),
-      messages: []
-    }];
+    try { return JSON.parse(localStorage.getItem('dl_sessions') || '[]'); } catch { return []; }
   });
-
-  // Chat input & query state
-  const [inputQuery, setInputQuery] = useState('');
-  const [stagedFile, setStagedFile] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [copiedId, setCopiedId] = useState(null);
-
-  // Settings & Models
-  const [backend, setBackend] = useState('online'); // 'online' (Groq Cloud) or 'offline' (Ollama Local)
-  const [topK, setTopK] = useState(8);
-  const [rerankTopK, setRerankTopK] = useState(4);
-  const [healthData, setHealthData] = useState(null);
-
-  // Vault & Documents
+  const [activeId, setActiveId] = useState(() => localStorage.getItem('dl_active') || null);
   const [sources, setSources] = useState([]);
-  const [uploading, setUploading] = useState(false);
-  const [uploadSuccessMsg, setUploadSuccessMsg] = useState(null);
+  const [srcFilter, setSrcFilter] = useState('');
+  const [citation, setCitation] = useState(null);
+  const [health, setHealth] = useState(null);
+  const [dragging, setDragging] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [backend, setBackend] = useState('online');
+  const [topK, setTopK] = useState(10);
+  const [rerankK, setRerankK] = useState(5);
+  const [theme, setTheme] = useState(() => localStorage.getItem('dl_theme') || 'light');
 
-  // Chunks Inspector Modal
-  const [inspectDoc, setInspectDoc] = useState(null);
-  const [inspectChunks, setInspectChunks] = useState([]);
-  const [loadingChunks, setLoadingChunks] = useState(false);
-  const [chunkSearch, setChunkSearch] = useState('');
-  const [selectedPageFilter, setSelectedPageFilter] = useState('all');
-
-  // Selected Citation Inspector Modal
-  const [activeCitationModal, setActiveCitationModal] = useState(null);
-
-  const messagesEndRef = useRef(null);
-  const fileInputRef = useRef(null);
-  const vaultFileInputRef = useRef(null);
-  const textareaRef = useRef(null);
-
-  // Sync sessions with localStorage
+  useEffect(() => { localStorage.setItem('dl_sessions', JSON.stringify(sessions)); }, [sessions]);
+  useEffect(() => { if (activeId) localStorage.setItem('dl_active', activeId); }, [activeId]);
+  
   useEffect(() => {
-    localStorage.setItem('evidence_sessions', JSON.stringify(sessions));
-  }, [sessions]);
+    localStorage.setItem('dl_theme', theme);
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
 
-  // Load initial health & sources
-  useEffect(() => {
-    fetchHealth();
-    fetchSources();
-  }, [backend]);
+  const active = sessions.find(s => s.id === activeId);
+  const msgs = active?.messages || [];
 
-  // Auto-scroll chat to bottom
-  const currentSession = sessions.find(s => s.id === activeSessionId) || sessions[0];
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [currentSession?.messages, loading]);
+  const setMsgs = (fn) => {
+    setSessions(prev => prev.map(s => s.id !== activeId ? s : { ...s, messages: typeof fn === 'function' ? fn(s.messages) : fn }));
+  };
+
+  const newChat = () => {
+    const s = { id: uid(), messages: [], ts: Date.now() };
+    setSessions(prev => [s, ...prev]);
+    setActiveId(s.id);
+    setPage('chat');
+    setCitation(null);
+  };
+
+  const delChat = (id) => {
+    setSessions(prev => prev.filter(s => s.id !== id));
+    if (activeId === id) setActiveId(sessions.filter(s => s.id !== id)[0]?.id || null);
+  };
+
+  const pickChat = (id) => { setActiveId(id); setPage('chat'); setCitation(null); };
+
+  const ensure = () => {
+    if (!activeId || !sessions.find(s => s.id === activeId)) newChat();
+  };
+
+  useEffect(() => { fetchSources(); fetchHealth(); }, []);
 
   const fetchHealth = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/health?backend=${backend}`);
-      const data = await res.json();
-      setHealthData(data);
-    } catch (err) {
-      console.error('Failed to fetch health status', err);
-    }
+    try { setHealth(await (await fetch(`${API}/health?backend=${backend}`)).json()); } catch {}
   };
-
   const fetchSources = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/sources`);
-      const data = await res.json();
-      setSources(data.sources || []);
-    } catch (err) {
-      console.error('Failed to fetch sources', err);
-    }
+    try { setSources((await (await fetch(`${API}/sources`)).json()).sources || []); } catch {}
   };
 
-  const handleCreateNewChat = () => {
-    const newSession = {
-      id: 'session_' + Date.now(),
-      title: 'New Investigation',
-      createdAt: new Date().toISOString(),
-      messages: []
-    };
-    setSessions(prev => [newSession, ...prev]);
-    setActiveSessionId(newSession.id);
-    setInputQuery('');
-    setStagedFile(null);
-    if (textareaRef.current) textareaRef.current.focus();
-  };
-
-  const handleDeleteSession = (sessionId, e) => {
-    e.stopPropagation();
-    if (sessions.length <= 1) {
-      handleCreateNewChat();
-      return;
-    }
-    const filtered = sessions.filter(s => s.id !== sessionId);
-    setSessions(filtered);
-    if (activeSessionId === sessionId) {
-      setActiveSessionId(filtered[0].id);
-    }
-  };
-
-  // Open Document Chunks Inspector
-  const handleInspectDocument = async (source) => {
-    setInspectDoc(source);
-    setLoadingChunks(true);
-    setChunkSearch('');
-    setSelectedPageFilter('all');
-    try {
-      const res = await fetch(`${API_BASE}/source/${source.source_id}/chunks`);
-      if (res.ok) {
-        const data = await res.json();
-        setInspectChunks(data.chunks || []);
-      } else {
-        // Fallback to get_source
-        const res2 = await fetch(`${API_BASE}/source/${source.source_id}`);
-        const data2 = await res2.json();
-        const formatted = (data2.items || []).map((it, idx) => ({
-          chunk_id: it.item_id,
-          chunk_index: it.metadata?.chunk_index || (idx + 1),
-          page: it.location?.page_number || it.metadata?.page || 1,
-          section: it.location?.section || '',
-          text: it.content,
-          char_count: it.content?.length || 0,
-        }));
-        setInspectChunks(formatted);
-      }
-    } catch (err) {
-      console.error('Failed to load chunks', err);
-    } finally {
-      setLoadingChunks(false);
-    }
-  };
-
-  // Delete source from vault
-  const handleDeleteSource = async (sourceId, e) => {
-    e.stopPropagation();
-    if (!window.confirm('Delete this file and all its indexed chunks from the database?')) return;
-    try {
-      await fetch(`${API_BASE}/source/${sourceId}`, { method: 'DELETE' });
-      fetchSources();
-      if (inspectDoc?.source_id === sourceId) {
-        setInspectDoc(null);
-      }
-    } catch (err) {
-      console.error('Failed to delete source', err);
-    }
-  };
-
-  // Handle uploading files into vault
-  const handleVaultUpload = async (files) => {
-    if (!files || files.length === 0) return;
-    setUploading(true);
-    setUploadSuccessMsg(null);
-    const formData = new FormData();
-    Array.from(files).forEach(f => formData.append('files', f));
-
-    try {
-      const res = await fetch(`${API_BASE}/ingest`, {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-      fetchSources();
-      const count = data.indexed || 0;
-      const totalChunks = (data.results || []).reduce((acc, r) => acc + (r.chunks_count || r.items_indexed || 0), 0);
-      setUploadSuccessMsg(`Successfully indexed ${count} file(s) into ${totalChunks} chunks!`);
-      setTimeout(() => setUploadSuccessMsg(null), 6000);
-    } catch (err) {
-      console.error('Upload failed', err);
-      alert('Ingestion error: ' + err.message);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  // Submit query
-  const handleSendMessage = async (textToSend = inputQuery) => {
-    const text = textToSend.trim();
-    if (!text && !stagedFile) return;
-
-    const userMessage = {
-      id: 'msg_' + Date.now(),
-      sender: 'user',
-      text: text || `Analyze attached file: ${stagedFile?.name}`,
-      attachedFile: stagedFile ? { name: stagedFile.name, size: stagedFile.size } : null,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-
-    // Update session messages and set title if first message
-    setSessions(prev => prev.map(s => {
-      if (s.id === activeSessionId) {
-        const isFirst = s.messages.length === 0;
-        return {
-          ...s,
-          title: isFirst ? (text.slice(0, 30) || 'Document Query') : s.title,
-          messages: [...s.messages, userMessage],
-        };
-      }
-      return s;
-    }));
-
-    setInputQuery('');
-    const fileToUpload = stagedFile;
-    setStagedFile(null);
-    setLoading(true);
-
-    try {
-      let data;
-      if (fileToUpload) {
-        // Query with file directly
-        const formData = new FormData();
-        formData.append('file', fileToUpload);
-        formData.append('instruction', text || 'Summarize this file and list key insights.');
-        formData.append('query_modality', fileToUpload.type.startsWith('image/') ? 'image' : fileToUpload.type.startsWith('audio/') ? 'audio' : 'document');
-        formData.append('top_k', topK);
-        formData.append('rerank_top_k', rerankTopK);
-        formData.append('backend', backend);
-
-        const res = await fetch(`${API_BASE}/query_file`, {
-          method: 'POST',
-          body: formData,
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        data = await res.json();
-      } else {
-        // Text query
-        const payload = {
-          query: text,
-          top_k: Number(topK),
-          rerank_top_k: Number(rerankTopK),
-          inference_mode: 'local',
-          query_modality: 'text',
-        };
-        const res = await fetch(`${API_BASE}/query?backend=${backend}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        data = await res.json();
-      }
-
-      const assistantMessage = {
-        id: 'msg_ai_' + Date.now(),
-        sender: 'assistant',
-        text: data.answer || 'No response generated.',
-        citations: data.citations || [],
-        retrieved_items: data.retrieved_items || [],
-        confidence: data.confidence,
-        latency_ms: data.latency_ms || {},
-        abstained: data.abstained,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      };
-
-      setSessions(prev => prev.map(s => {
-        if (s.id === activeSessionId) {
-          return {
-            ...s,
-            messages: [...s.messages, assistantMessage],
-          };
-        }
-        return s;
-      }));
-
-      // Refresh sources if a file was ingested
-      if (fileToUpload) fetchSources();
-    } catch (err) {
-      console.error('Query error:', err);
-      const errorMessage = {
-        id: 'msg_err_' + Date.now(),
-        sender: 'assistant',
-        text: `⚠️ **Processing Error**: Could not complete query. \n\n*Details*: ${err.message}`,
-        isError: true,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      };
-      setSessions(prev => prev.map(s => {
-        if (s.id === activeSessionId) {
-          return { ...s, messages: [...s.messages, errorMessage] };
-        }
-        return s;
-      }));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const copyToClipboard = (text, id) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
-  // Get file type icon and color
-  const getFileIcon = (filename) => {
-    const ext = filename?.split('.').pop()?.toLowerCase();
-    if (ext === 'pdf') return <FileText className="w-4 h-4 text-rose-400" />;
-    if (['doc', 'docx'].includes(ext)) return <FileText className="w-4 h-4 text-blue-400" />;
-    if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) return <ImageIcon className="w-4 h-4 text-emerald-400" />;
-    if (['mp3', 'wav', 'ogg'].includes(ext)) return <Headphones className="w-4 h-4 text-purple-400" />;
-    return <File className="w-4 h-4 text-slate-400" />;
-  };
-
-  // Filter chunks in inspector
-  const filteredChunks = inspectChunks.filter(c => {
-    const matchesSearch = !chunkSearch || c.text?.toLowerCase().includes(chunkSearch.toLowerCase());
-    const matchesPage = selectedPageFilter === 'all' || String(c.page) === String(selectedPageFilter);
-    return matchesSearch && matchesPage;
-  });
-
-  const availablePages = Array.from(new Set(inspectChunks.map(c => c.page))).sort((a, b) => a - b);
+  useEffect(() => {
+    const dOver = (e) => { e.preventDefault(); setDragging(true); };
+    const dLeave = (e) => { if (!e.relatedTarget) setDragging(false); };
+    const dDrop = (e) => { e.preventDefault(); setDragging(false); };
+    window.addEventListener('dragover', dOver);
+    window.addEventListener('dragleave', dLeave);
+    window.addEventListener('drop', dDrop);
+    return () => { window.removeEventListener('dragover', dOver); window.removeEventListener('dragleave', dLeave); window.removeEventListener('drop', dDrop); };
+  }, []);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#080a11] text-slate-100 font-sans antialiased">
-      {/* ------------------------------------------------------------- SIDEBAR */}
-      <aside
-        className={`flex flex-col border-r border-white/10 bg-[#06070c] transition-all duration-300 ease-in-out z-20 ${
-          sidebarOpen ? 'w-80 min-w-[20rem]' : 'w-0 -translate-x-full overflow-hidden'
-        }`}
-      >
-        {/* Sidebar Header */}
-        <div className="p-4 border-b border-white/10 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
-              <Sparkles className="w-4 h-4 text-white" />
-            </div>
-            <div>
-              <div className="font-bold text-sm tracking-wide bg-gradient-to-r from-white via-slate-200 to-cyan-400 bg-clip-text text-transparent font-['Outfit']">
-                Evidence AI
-              </div>
-              <div className="text-[10px] text-slate-400 flex items-center gap-1.5 font-mono">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                Grounded RAG v2.4
-              </div>
-            </div>
-          </div>
-          <button
-            onClick={() => setSidebarOpen(false)}
-            className="p-1.5 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white transition"
-            title="Collapse Sidebar"
-          >
-            <PanelLeftClose className="w-4 h-4" />
-          </button>
+    <div className="shell">
+      <aside className={`sidebar ${sidebarOpen ? '' : 'collapsed'}`}>
+        <div className="sb-brand">
+          <LogoWide height={24} />
         </div>
 
-        {/* New Chat Button */}
-        <div className="p-3">
-          <button
-            onClick={handleCreateNewChat}
-            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-500/15 via-blue-500/10 to-transparent hover:from-cyan-500/25 hover:via-blue-500/20 border border-cyan-500/30 hover:border-cyan-400/50 text-cyan-300 hover:text-white font-medium text-xs tracking-wide transition shadow-sm"
-          >
-            <Plus className="w-4 h-4 text-cyan-400" />
-            <span>New Investigation</span>
+        <button className="sb-new" onClick={newChat}><Plus size={15}/>New Chat</button>
+
+        <nav className="sb-nav">
+          <button className={`sb-nav-item ${page === 'chat' ? 'active' : ''}`} onClick={() => setPage('chat')}>
+            <Home size={15}/> Home
           </button>
-        </div>
+          <button className={`sb-nav-item ${page === 'sources' ? 'active' : ''}`} onClick={() => setPage('sources')}>
+            <FolderOpen size={15}/> Sources
+          </button>
+          <button className={`sb-nav-item ${page === 'settings' ? 'active' : ''}`} onClick={() => setPage('settings')}>
+            <SettingsIcon size={15}/> Settings
+          </button>
+        </nav>
 
-        {/* Knowledge Vault / Uploaded Documents Section */}
-        <div className="px-3 py-2 flex flex-col flex-1 min-h-0 overflow-hidden">
-          <div className="flex items-center justify-between px-2 pb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            <span className="flex items-center gap-1.5 font-['Outfit']">
-              <Layers className="w-3.5 h-3.5 text-cyan-400" />
-              Attached Context ({sources.length})
-            </span>
-            <button
-              onClick={() => vaultFileInputRef.current?.click()}
-              className="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 normal-case font-normal hover:underline"
-              title="Add documents to knowledge vault"
-            >
-              <Plus className="w-3 h-3" /> Add Files
-            </button>
-            <input
-              type="file"
-              ref={vaultFileInputRef}
-              multiple
-              className="hidden"
-              onChange={(e) => handleVaultUpload(e.target.files)}
-            />
-          </div>
-
-          {/* Upload Success Alert */}
-          {uploadSuccessMsg && (
-            <div className="mb-2 p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px] flex items-center gap-1.5 animate-fade-in">
-              <FileCheck className="w-3.5 h-3.5 shrink-0" />
-              <span>{uploadSuccessMsg}</span>
-            </div>
-          )}
-
-          {/* Document List */}
-          <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
-            {sources.length === 0 ? (
-              <div
-                onClick={() => vaultFileInputRef.current?.click()}
-                className="p-4 rounded-xl border border-dashed border-white/10 hover:border-cyan-500/40 bg-white/[0.02] hover:bg-cyan-500/[0.03] text-center cursor-pointer transition group"
-              >
-                <UploadCloud className="w-6 h-6 text-slate-500 group-hover:text-cyan-400 mx-auto mb-1.5 transition" />
-                <div className="text-xs font-medium text-slate-300">No documents yet</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Click to upload PDF, Word or images</div>
-              </div>
-            ) : (
-              sources.map((src) => (
-                <div
-                  key={src.source_id}
-                  onClick={() => handleInspectDocument(src)}
-                  className="group relative flex items-center justify-between p-2.5 rounded-xl border border-white/5 hover:border-cyan-500/30 bg-white/[0.02] hover:bg-white/[0.05] cursor-pointer transition"
-                >
-                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                    <div className="p-1.5 rounded-lg bg-white/5 shrink-0">
-                      {getFileIcon(src.filename)}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium text-slate-200 truncate group-hover:text-cyan-300 transition">
-                        {src.filename}
-                      </div>
-                      <div className="text-[10px] text-slate-500 flex items-center gap-2 mt-0.5">
-                        <span className="text-cyan-400/90 font-mono">
-                          {src.file_size ? `${(src.file_size / 1024).toFixed(0)} KB` : 'Indexed'}
-                        </span>
-                        <span>•</span>
-                        <span className="text-slate-400">Click to view chunks</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleInspectDocument(src); }}
-                      className="p-1 hover:bg-cyan-500/20 text-slate-400 hover:text-cyan-300 rounded"
-                      title="Inspect Chunks & Pages"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      onClick={(e) => handleDeleteSource(src.source_id, e)}
-                      className="p-1 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded"
-                      title="Delete file from store"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          {/* Chat History Section */}
-          <div className="pt-3 border-t border-white/10 mt-2">
-            <div className="px-2 pb-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wider font-['Outfit']">
-              Recent Chats
-            </div>
-            <div className="max-h-36 overflow-y-auto space-y-1">
-              {sessions.map((sess) => (
-                <div
-                  key={sess.id}
-                  onClick={() => setActiveSessionId(sess.id)}
-                  className={`group flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs cursor-pointer transition ${
-                    sess.id === activeSessionId
-                      ? 'bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 font-medium'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-                  }`}
-                >
-                  <span className="truncate flex-1">{sess.title}</span>
-                  {sessions.length > 1 && (
-                    <button
-                      onClick={(e) => handleDeleteSession(sess.id, e)}
-                      className="opacity-0 group-hover:opacity-100 p-1 hover:text-rose-400 transition"
-                      title="Delete chat"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  )}
+        {sessions.length > 0 && (
+          <>
+            <div className="sb-divider"/>
+            <div className="sb-label">Recent</div>
+            <div className="sb-chats">
+              {sessions.map(s => (
+                <div key={s.id} className={`sb-chat ${s.id === activeId ? 'active' : ''}`} onClick={() => pickChat(s.id)}>
+                  <MessageSquare size={14} style={{ opacity: 0.4, flexShrink: 0 }}/>
+                  <span className="sb-chat-name">{chatTitle(s.messages)}</span>
+                  <button className="sb-chat-del" onClick={(e) => { e.stopPropagation(); delChat(s.id); }}><Trash2 size={12}/></button>
                 </div>
               ))}
             </div>
-          </div>
-        </div>
+          </>
+        )}
 
-        {/* Sidebar Footer: Model Switcher & System Status */}
-        <div className="p-3 border-t border-white/10 bg-[#040508]/80">
-          <div className="text-[11px] font-semibold text-slate-400 mb-1.5 flex items-center justify-between">
-            <span className="flex items-center gap-1.5">
-              <Cpu className="w-3.5 h-3.5 text-cyan-400" /> Model Provider
-            </span>
-            <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
-              backend === 'online' ? 'bg-cyan-500/20 text-cyan-300' : 'bg-purple-500/20 text-purple-300'
-            }`}>
-              {backend === 'online' ? '⚡ 0.5s Fast' : '🔒 Offline'}
-            </span>
+        <div style={{ flex: 1 }}/>
+        <div className="sb-footer">
+          <div className="sb-user">
+            <div className="sb-avatar">AS</div>
+            <span className="sb-user-name">Aditya Singh</span>
           </div>
-
-          <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-white/[0.03] border border-white/5">
-            <button
-              onClick={() => setBackend('online')}
-              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition ${
-                backend === 'online'
-                  ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-black shadow-md font-semibold'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Zap className="w-3.5 h-3.5" />
-              <span>Fast Cloud</span>
-            </button>
-            <button
-              onClick={() => setBackend('offline')}
-              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition ${
-                backend === 'offline'
-                  ? 'bg-purple-600 text-white shadow-md font-semibold'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Shield className="w-3.5 h-3.5" />
-              <span>Ollama</span>
-            </button>
-          </div>
-
-          <div className="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-500">
-            <span className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-              FAISS Index: {healthData?.index?.vectors || 0} vectors
-            </span>
-            <span className="font-mono text-[10px] text-slate-400">
-              {backend === 'online' ? 'Qwen-2.5' : 'qwen2.5vl'}
-            </span>
-          </div>
+          <button className="sb-theme-toggle" onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')} title="Toggle theme">
+            {theme === 'light' ? <Moon size={15}/> : <Sun size={15}/>}
+          </button>
         </div>
       </aside>
 
-      {/* ------------------------------------------------------------- MAIN CHAT VIEW */}
-      <main className="flex-1 flex flex-col h-full overflow-hidden relative bg-[#080a11]">
-        {/* Top Navbar */}
-        <header className="h-14 border-b border-white/10 px-4 flex items-center justify-between shrink-0 bg-[#080a11]/90 backdrop-blur z-10">
-          <div className="flex items-center gap-3">
-            {!sidebarOpen && (
-              <button
-                onClick={() => setSidebarOpen(true)}
-                className="p-1.5 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white transition"
-                title="Expand Sidebar"
-              >
-                <PanelLeft className="w-5 h-5" />
-              </button>
-            )}
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-slate-200 tracking-wide">
-                {currentSession?.title || 'Investigation'}
-              </span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 font-mono">
-                {backend === 'online' ? '⚡ Groq Qwen-2.5 (Fast)' : '🔒 Ollama Local (Offline)'}
-              </span>
-            </div>
+      <div className="main">
+        <header className="topbar">
+          <div className="topbar-left">
+            <button className="topbar-toggle" onClick={() => setSidebarOpen(v => !v)} title="Toggle sidebar">
+              {sidebarOpen ? <PanelLeftClose size={18}/> : <PanelLeft size={18}/>}
+            </button>
+            {active && page === 'chat' && <span className="topbar-title">{chatTitle(active.messages)}</span>}
           </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => vaultFileInputRef.current?.click()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-300 hover:text-white transition"
-            >
-              <Paperclip className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Attach Context</span>
-            </button>
-            <button
-              onClick={() => {
-                if (window.confirm('Clear conversation messages?')) {
-                  setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, messages: [] } : s));
-                }
-              }}
-              className="p-2 hover:bg-white/5 rounded-lg text-slate-400 hover:text-rose-400 transition"
-              title="Clear Messages"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+          <div className="topbar-right">
+            <button className={`topbar-btn ${page === 'sources' ? 'active' : ''}`} onClick={() => setPage('sources')}>Sources</button>
+            <button className={`topbar-btn ${page === 'settings' ? 'active' : ''}`} onClick={() => setPage('settings')}>Settings</button>
           </div>
         </header>
 
-        {/* Message Stream Scroll Area */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-8 space-y-6">
-          {currentSession?.messages?.length === 0 ? (
-            /* Welcome / Starter View (ChatGPT & Claude Style) */
-            <div className="max-w-2xl mx-auto my-auto pt-8 pb-12 flex flex-col items-center text-center animate-fade-in">
-              <div className="relative mb-4">
-                <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-xl shadow-cyan-500/20">
-                  <Sparkles className="w-7 h-7 text-white" />
-                </div>
-                <div className="absolute -inset-1 rounded-2xl bg-cyan-500/20 blur-lg -z-10 animate-pulse"></div>
-              </div>
+        {page === 'chat' && (
+          <ChatView
+            msgs={msgs} setMsgs={setMsgs} sources={sources}
+            cite={citation} setCite={setCitation}
+            backend={backend} topK={topK} rerankK={rerankK}
+            fetchSources={fetchSources} dragging={dragging}
+            setDragging={setDragging} ensure={ensure}
+          />
+        )}
+        {page === 'sources' && <SourcesPage sources={sources} filter={srcFilter} setFilter={setSrcFilter} fetchSources={fetchSources}/>}
+        {page === 'settings' && <SettingsPage backend={backend} setBackend={setBackend} topK={topK} setTopK={setTopK} rerankK={rerankK} setRerankK={setRerankK} health={health} fetchHealth={fetchHealth}/>}
+      </div>
 
-              <h1 className="text-2xl font-bold text-white font-['Outfit'] tracking-tight mb-2">
-                What would you like to investigate today?
-              </h1>
-              <p className="text-sm text-slate-400 max-w-lg mb-8 leading-relaxed">
-                Evidence AI processes your documents into page-level chunks with deterministic citations.
-                Upload reports, research, or PDFs and ask questions below.
-              </p>
+      {citation && <SourcePanel cite={citation} onClose={() => setCitation(null)}/>}
+      {dragging && <div className="drag-over"><div className="drag-over-label">Drop files to upload</div></div>}
+    </div>
+  );
+}
 
-              {/* Starter Prompt Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full text-left">
-                <div
-                  onClick={() => handleSendMessage('Summarize the main objectives and findings of the uploaded document')}
-                  className="p-3.5 rounded-xl border border-white/10 hover:border-cyan-500/40 bg-white/[0.02] hover:bg-cyan-500/[0.04] cursor-pointer transition group"
-                >
-                  <div className="text-xs font-semibold text-slate-200 group-hover:text-cyan-300 flex items-center gap-1.5 mb-1 font-['Outfit']">
-                    <FileText className="w-3.5 h-3.5 text-cyan-400" />
-                    Summarize Document
-                  </div>
-                  <div className="text-[11px] text-slate-400 leading-normal">
-                    Provide a concise breakdown of objectives, methodology, and conclusions.
-                  </div>
-                </div>
+/* ── Progress ──────────────────────────────────────────────── */
 
-                <div
-                  onClick={() => handleSendMessage('What are the key technical steps or commands executed?')}
-                  className="p-3.5 rounded-xl border border-white/10 hover:border-cyan-500/40 bg-white/[0.02] hover:bg-cyan-500/[0.04] cursor-pointer transition group"
-                >
-                  <div className="text-xs font-semibold text-slate-200 group-hover:text-cyan-300 flex items-center gap-1.5 mb-1 font-['Outfit']">
-                    <Cpu className="w-3.5 h-3.5 text-blue-400" />
-                    Technical Steps & Code
-                  </div>
-                  <div className="text-[11px] text-slate-400 leading-normal">
-                    Extract all procedures, terminal commands, configurations, and scripts.
-                  </div>
-                </div>
+function ProgressRow({ type }) {
+  const [p, setP] = useState(0);
+  useEffect(() => {
+    const i = setInterval(() => {
+      setP(v => {
+        const next = v + Math.random() * 12 + 3;
+        return next > 95 ? 95 : next;
+      });
+    }, 600);
+    return () => clearInterval(i);
+  }, []);
+  
+  let msg = '';
+  if (type === 'ingest') {
+    if (p < 20) msg = 'Uploading files...';
+    else if (p < 50) msg = 'Extracting document text...';
+    else if (p < 80) msg = 'Generating embeddings...';
+    else msg = 'Indexing into vector store...';
+  } else {
+    if (p < 30) msg = 'Analyzing query...';
+    else if (p < 60) msg = 'Searching knowledge base...';
+    else if (p < 85) msg = 'Reranking results...';
+    else msg = 'Generating grounded response...';
+  }
+  
+  return (
+    <div className="prog-row">
+      <div className="prog-text"><span>{msg}</span><span className="prog-perc">{Math.floor(p)}%</span></div>
+      <div className="prog-bar-bg"><div className="prog-bar-fill" style={{ width: p + '%' }}/></div>
+    </div>
+  );
+}
 
-                <div
-                  onClick={() => handleSendMessage('Extract all numerical data, tables, and experimental results')}
-                  className="p-3.5 rounded-xl border border-white/10 hover:border-cyan-500/40 bg-white/[0.02] hover:bg-cyan-500/[0.04] cursor-pointer transition group"
-                >
-                  <div className="text-xs font-semibold text-slate-200 group-hover:text-cyan-300 flex items-center gap-1.5 mb-1 font-['Outfit']">
-                    <Layers className="w-3.5 h-3.5 text-emerald-400" />
-                    Extract Tables & Metrics
-                  </div>
-                  <div className="text-[11px] text-slate-400 leading-normal">
-                    Retrieve specific metrics, test pass/fail rates, and data values.
-                  </div>
-                </div>
+/* ── ChatView ────────────────────────────────────────────── */
 
-                <div
-                  onClick={() => handleSendMessage('Explain JUnit and test automation concepts from the document')}
-                  className="p-3.5 rounded-xl border border-white/10 hover:border-cyan-500/40 bg-white/[0.02] hover:bg-cyan-500/[0.04] cursor-pointer transition group"
-                >
-                  <div className="text-xs font-semibold text-slate-200 group-hover:text-cyan-300 flex items-center gap-1.5 mb-1 font-['Outfit']">
-                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                    Concept Deep-Dive
-                  </div>
-                  <div className="text-[11px] text-slate-400 leading-normal">
-                    Explain key theory definitions and examples with exact source citations.
-                  </div>
-                </div>
-              </div>
+function ChatView({ msgs, setMsgs, sources, cite, setCite, backend, topK, rerankK, fetchSources, dragging, setDragging, ensure }) {
+  const [text, setText] = useState('');
+  const [files, setFiles] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
+  const [err, setErr] = useState(null);
+  const endRef = useRef(null);
+  const fileRef = useRef(null);
+  const taRef = useRef(null);
+
+  const has = msgs.length > 0;
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [msgs, loading]);
+  useEffect(() => { const t = taRef.current; if (t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 160) + 'px'; } }, [text]);
+
+  const send = async () => {
+    const q = text.trim();
+    if (!q && !files.length) return;
+    ensure();
+    const uMsg = { role: 'user', text: q || 'Analyze these files.', files: files.map(f => f.name) };
+    await new Promise(r => setTimeout(r, 30));
+    setMsgs(p => [...p, uMsg]);
+    setText('');
+    setLoading(true);
+    setErr(null);
+
+    if (files.length) {
+      setIngesting(true);
+      try {
+        const fd = new FormData();
+        files.forEach(f => fd.append('files', f));
+        await fetch(`${API}/ingest`, { method: 'POST', body: fd });
+        await fetchSources();
+      } catch {}
+      setIngesting(false);
+    }
+
+    try {
+      const res = await fetch(`${API}/query?backend=${backend}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q || 'Summarize the uploaded files.', top_k: +topK, rerank_top_k: +rerankK, inference_mode: 'local', query_modality: 'text' }),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const d = await res.json();
+      setMsgs(p => [...p, { role: 'ai', text: d.answer, citations: d.citations || [], abstained: d.abstained, confidence: d.confidence }]);
+    } catch (e) {
+      setErr(e.message);
+      setMsgs(p => [...p, { role: 'ai', text: 'Something went wrong. Please try again.', error: true }]);
+    } finally { setLoading(false); setFiles([]); }
+  };
+
+  const keyDown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+  const addFiles = (e) => { setFiles(p => [...p, ...Array.from(e.target.files)]); e.target.value = ''; };
+  const rmFile = (i) => setFiles(p => p.filter((_, j) => j !== i));
+  const drop = useCallback((e) => { e.preventDefault(); setDragging(false); setFiles(p => [...p, ...Array.from(e.dataTransfer.files)]); }, [setDragging]);
+
+  const suggestions = ['Summarize all documents', 'What are the key findings?', 'What risks are mentioned?', 'Compare these documents', 'Find important numbers'];
+
+  return (
+    <>
+      <div className="chat-scroll" onDrop={drop} onDragOver={e => e.preventDefault()}>
+        {!has ? (
+          <div className="home">
+            <div style={{ marginBottom: 24 }}>
+              <LogoWide height={56} />
             </div>
-          ) : (
-            /* Active Message List */
-            currentSession.messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`max-w-3xl mx-auto flex gap-3 animate-fade-in ${
-                  msg.sender === 'user' ? 'justify-end' : 'justify-start'
-                }`}
-              >
-                {/* Assistant Avatar */}
-                {msg.sender === 'assistant' && (
-                  <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shrink-0 shadow-md shadow-cyan-500/10 mt-1">
-                    <Sparkles className="w-4 h-4 text-white" />
-                  </div>
-                )}
+            <h1 className="home-h1">Unlock insights from your <span className="highlight">documents.</span></h1>
 
-                {/* Message Bubble Container */}
-                <div className={`flex flex-col ${msg.sender === 'user' ? 'items-end max-w-xl' : 'items-start flex-1 min-w-0'}`}>
-                  {/* User Attached File Badge */}
-                  {msg.attachedFile && (
-                    <div className="mb-1.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-xs font-mono">
-                      <Paperclip className="w-3 h-3" />
-                      <span>{msg.attachedFile.name}</span>
-                    </div>
-                  )}
-
-                  {/* Message Bubble */}
-                  <div
-                    className={`rounded-2xl p-4 text-sm leading-relaxed ${
-                      msg.sender === 'user'
-                        ? 'bg-[#182136] text-white border border-cyan-500/20 shadow-md'
-                        : 'bg-white/[0.03] text-slate-100 border border-white/10 w-full shadow-sm'
-                    }`}
-                  >
-                    {msg.sender === 'assistant' ? (
-                      <div className="prose">
-                        <ReactMarkdown>{msg.text}</ReactMarkdown>
-                      </div>
-                    ) : (
-                      <div className="whitespace-pre-wrap">{msg.text}</div>
-                    )}
-
-                    {/* Citations Accordion (if assistant response has citations) */}
-                    {msg.citations && msg.citations.length > 0 && (
-                      <div className="mt-4 pt-3 border-t border-white/10">
-                        <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-                          <span className="flex items-center gap-1.5 text-cyan-400 font-['Outfit']">
-                            <Layers className="w-3.5 h-3.5" />
-                            Grounded Citations ({msg.citations.length})
-                          </span>
-                          <span className="text-[10px] text-slate-500">Click to view source excerpt</span>
-                        </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {msg.citations.map((c) => (
-                            <button
-                              key={c.citation_id}
-                              onClick={() => setActiveCitationModal(c)}
-                              className="citation-chip"
-                              title="Click to view exact chunk excerpt"
-                            >
-                              <FileText className="w-3 h-3 text-cyan-400" />
-                              <span>[{c.citation_id}] {c.filename}</span>
-                              {c.location?.page_number && (
-                                <span className="text-white/60 font-sans">• Page {c.location.page_number}</span>
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Footer bar for Assistant Message */}
-                    {msg.sender === 'assistant' && !msg.isError && (
-                      <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-500">
-                        <div className="flex items-center gap-3">
-                          {msg.latency_ms?.total_ms && (
-                            <span className="text-cyan-400 font-mono">
-                              ⚡ {(msg.latency_ms.total_ms / 1000).toFixed(2)}s
-                            </span>
-                          )}
-                          {msg.confidence !== null && msg.confidence !== undefined && (
-                            <span className="text-slate-400">
-                              Confidence: {Math.round(msg.confidence * 100)}%
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => copyToClipboard(msg.text, msg.id)}
-                            className="p-1 hover:text-cyan-300 text-slate-400 rounded flex items-center gap-1 transition"
-                            title="Copy response"
-                          >
-                            {copiedId === msg.id ? (
-                              <>
-                                <Check className="w-3.5 h-3.5 text-emerald-400" />
-                                <span className="text-[10px] text-emerald-400">Copied</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="w-3.5 h-3.5" />
-                                <span className="text-[10px]">Copy</span>
-                              </>
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* User Avatar */}
-                {msg.sender === 'user' && (
-                  <div className="w-8 h-8 rounded-xl bg-slate-700 border border-white/10 flex items-center justify-center shrink-0 mt-1 text-xs font-semibold text-white">
-                    U
-                  </div>
-                )}
-              </div>
-            ))
-          )}
-
-          {/* Typing / Generating Indicator */}
-          {loading && (
-            <div className="max-w-3xl mx-auto flex gap-3 animate-fade-in">
-              <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shrink-0 shadow-md shadow-cyan-500/10">
-                <Sparkles className="w-4 h-4 text-white animate-spin" />
-              </div>
-              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 text-sm text-slate-300 flex items-center gap-3">
-                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
-                <span>Retrieving chunks & generating grounded response...</span>
-              </div>
+            <div className="comp-wrap center">
+              <Comp text={text} setText={setText} files={files} addFiles={addFiles} rmFile={rmFile} send={send} keyDown={keyDown} loading={loading} taRef={taRef} fileRef={fileRef}/>
             </div>
-          )}
 
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* ------------------------------------------------------------- FLOATING INPUT BAR */}
-        <div className="p-4 md:px-8 shrink-0 bg-gradient-to-t from-[#080a11] via-[#080a11]/90 to-transparent">
-          <div className="max-w-3xl mx-auto">
-            {/* Staged File Badge */}
-            {stagedFile && (
-              <div className="mb-2 flex items-center justify-between p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-xs text-cyan-300 animate-fade-in">
-                <div className="flex items-center gap-2 truncate">
-                  <Paperclip className="w-4 h-4 text-cyan-400 shrink-0" />
-                  <span className="font-medium truncate">{stagedFile.name}</span>
-                  <span className="text-slate-400 font-mono">({(stagedFile.size / 1024).toFixed(0)} KB)</span>
+            <div className="home-suggestions">
+              {suggestions.map((s, i) => (
+                <button key={i} className="home-sug" onClick={() => { setText(s); taRef.current?.focus(); }}>{s}</button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="msgs">
+            {msgs.map((m, i) => <Msg key={i} m={m} onCite={setCite}/>)}
+            {loading && (
+              <div className="msg msg-ai">
+                <div className="msg-ai-head">
+                  <div className="msg-ai-avatar"><Logo size={12} light/></div>
+                  <div className="msg-ai-name">DocLink</div>
                 </div>
-                <button
-                  onClick={() => setStagedFile(null)}
-                  className="p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white"
-                  title="Remove attachment"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                {ingesting && <ProgressRow type="ingest" />}
+                {!ingesting && <ProgressRow type="query" />}
               </div>
             )}
-
-            {/* Input Capsule (ChatGPT / Claude Pill) */}
-            <div className="chat-input-capsule p-2 flex items-center gap-2">
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="p-2 text-slate-400 hover:text-cyan-400 hover:bg-white/5 rounded-xl transition shrink-0"
-                title="Attach Document or Image to Query"
-              >
-                <Paperclip className="w-5 h-5" />
-              </button>
-              <input
-                type="file"
-                ref={fileInputRef}
-                className="hidden"
-                onChange={(e) => {
-                  if (e.target.files?.[0]) setStagedFile(e.target.files[0]);
-                }}
-              />
-
-              <textarea
-                ref={textareaRef}
-                value={inputQuery}
-                onChange={(e) => setInputQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSendMessage();
-                  }
-                }}
-                placeholder={stagedFile ? `Ask a question about ${stagedFile.name}...` : "Ask anything about your documents... (Shift + Enter for newline)"}
-                rows={1}
-                className="flex-1 bg-transparent border-none outline-none text-sm text-white placeholder-slate-500 resize-none max-h-36 py-1.5 px-2"
-                style={{ minHeight: '24px' }}
-              />
-
-              <button
-                onClick={() => handleSendMessage()}
-                disabled={(!inputQuery.trim() && !stagedFile) || loading}
-                className="send-button"
-                title="Send query"
-              >
-                {loading ? (
-                  <RefreshCw className="w-4 h-4 text-black animate-spin" />
-                ) : (
-                  <ArrowRight className="w-4 h-4 text-black font-bold" />
-                )}
-              </button>
-            </div>
-
-            <div className="mt-2 text-center text-[11px] text-slate-500">
-              Evidence AI searches across verified chunks with page numbers and deterministic citations.
-            </div>
+            {err && !loading && <div className="msg-ai-err"><AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }}/>{err}</div>}
+            <div ref={endRef}/>
           </div>
+        )}
+      </div>
+
+      {has && (
+        <div className="comp-wrap">
+          <Comp text={text} setText={setText} files={files} addFiles={addFiles} rmFile={rmFile} send={send} keyDown={keyDown} loading={loading} taRef={taRef} fileRef={fileRef}/>
         </div>
-      </main>
+      )}
+    </>
+  );
+}
 
-      {/* ------------------------------------------------------------- MODAL 1: CHUNKS INSPECTOR */}
-      {inspectDoc && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-[#0c101d] border border-white/15 rounded-2xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
-            {/* Modal Header */}
-            <div className="p-4 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20">
-                  {getFileIcon(inspectDoc.filename)}
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-white font-['Outfit']">{inspectDoc.filename}</h3>
-                  <p className="text-[11px] text-slate-400 font-mono">
-                    {inspectChunks.length} chunks indexed • {inspectDoc.file_size ? `${(inspectDoc.file_size / 1024).toFixed(0)} KB` : ''}
-                  </p>
-                </div>
+/* ── Composer ────────────────────────────────────────────── */
+
+function Comp({ text, setText, files, addFiles, rmFile, send, keyDown, loading, taRef, fileRef }) {
+  return (
+    <div className="comp">
+      {files.length > 0 && (
+        <div className="comp-files">
+          {files.map((f, i) => {
+            const Ic = fIcon(f.name);
+            return <div key={i} className="comp-file"><Ic size={12}/>{f.name}<button className="comp-file-x" onClick={() => rmFile(i)}><X size={11}/></button></div>;
+          })}
+        </div>
+      )}
+      <div className="comp-row">
+        <input ref={fileRef} type="file" multiple onChange={addFiles} style={{ display: 'none' }} accept=".pdf,.doc,.docx,.txt,.csv,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.tif,.wav,.mp3,.m4a,.flac,.ogg"/>
+        <button className="comp-attach" onClick={() => fileRef.current?.click()} title="Attach files"><Paperclip size={17}/></button>
+        <textarea ref={taRef} className="comp-input" rows={1} placeholder="Ask anything about your documents…" value={text} onChange={e => setText(e.target.value)} onKeyDown={keyDown}/>
+        <button className="comp-send" onClick={send} disabled={loading || (!text.trim() && !files.length)} title="Send"><Send size={15}/></button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Message ─────────────────────────────────────────────── */
+
+function Msg({ m, onCite }) {
+  if (m.role === 'user') {
+    return (
+      <div className="msg msg-user">
+        {m.files?.length > 0 && <div className="msg-user-files">{m.files.map((f, i) => { const I = fIcon(f); return <div key={i} className="msg-file"><I size={11}/>{f}</div>; })}</div>}
+        <div className="msg-user-text">{m.text}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="msg msg-ai">
+      <div className="msg-ai-head">
+        <div className="msg-ai-avatar"><Logo size={12} light/></div>
+        <div className="msg-ai-name">DocLink</div>
+      </div>
+      {m.abstained ? (
+        <div className="msg-ai-warn"><AlertCircle size={15} style={{ flexShrink: 0, marginTop: 2 }}/><span>{m.text}</span></div>
+      ) : m.error ? (
+        <div className="msg-ai-err"><AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }}/>{m.text}</div>
+      ) : (
+        <div className="msg-ai-body">{m.text}</div>
+      )}
+      {m.citations?.length > 0 && (
+        <div className="cites">
+          <div className="cites-label">Sources</div>
+          <div className="cites-list">
+            {m.citations.map((c, i) => (
+              <div key={i} className="cite" onClick={() => onCite(c)}>
+                <div className="cite-n">{c.citation_id || i + 1}</div>
+                <span className="cite-name">{c.filename}</span>
+                {locLabel(c) && <span className="cite-loc">· {locLabel(c)}</span>}
+                {c.excerpt && <span className="cite-ex">— {c.excerpt}</span>}
+                <ChevronRight size={13} className="cite-arrow"/>
               </div>
-              <button
-                onClick={() => setInspectDoc(null)}
-                className="p-1.5 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Filter Bar */}
-            <div className="p-3 border-b border-white/10 bg-white/[0.01] flex flex-wrap items-center gap-3">
-              <div className="relative flex-1 min-w-[200px]">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                <input
-                  type="text"
-                  placeholder="Search chunk text..."
-                  value={chunkSearch}
-                  onChange={(e) => setChunkSearch(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
-                />
-              </div>
-
-              {availablePages.length > 1 && (
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-slate-400">Page:</span>
-                  <select
-                    value={selectedPageFilter}
-                    onChange={(e) => setSelectedPageFilter(e.target.value)}
-                    className="bg-white/5 border border-white/10 rounded-xl px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500"
-                  >
-                    <option value="all">All Pages ({availablePages.length})</option>
-                    {availablePages.map(p => (
-                      <option key={p} value={String(p)}>Page {p}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
-
-            {/* Chunks List */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              {loadingChunks ? (
-                <div className="py-16 text-center text-slate-400 text-xs">
-                  <RefreshCw className="w-6 h-6 mx-auto animate-spin mb-2 text-cyan-400" />
-                  Loading document chunks...
-                </div>
-              ) : filteredChunks.length === 0 ? (
-                <div className="py-16 text-center text-slate-400 text-xs">
-                  No chunks match the current search or page filter.
-                </div>
-              ) : (
-                filteredChunks.map((chunk, idx) => (
-                  <div
-                    key={chunk.chunk_id || idx}
-                    className="p-3.5 rounded-xl border border-white/10 bg-white/[0.02] hover:border-cyan-500/30 hover:bg-white/[0.03] transition space-y-2"
-                  >
-                    <div className="flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-mono text-[11px] font-medium">
-                          Page {chunk.page}
-                        </span>
-                        <span className="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-slate-300 font-mono text-[11px]">
-                          Chunk #{chunk.chunk_index}
-                        </span>
-                        {chunk.section && (
-                          <span className="text-slate-400 text-[11px] truncate max-w-xs">
-                            • {chunk.section}
-                          </span>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => copyToClipboard(chunk.text, chunk.chunk_id || idx)}
-                        className="text-[11px] text-slate-400 hover:text-cyan-300 flex items-center gap-1"
-                      >
-                        {copiedId === (chunk.chunk_id || idx) ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                        <span>Copy</span>
-                      </button>
-                    </div>
-                    <div className="text-xs text-slate-200 leading-relaxed font-sans whitespace-pre-wrap bg-black/30 p-2.5 rounded-lg border border-white/5">
-                      {chunk.text}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
+            ))}
           </div>
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* ------------------------------------------------------------- MODAL 2: CITATION DETAILS */}
-      {activeCitationModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-[#0c101d] border border-cyan-500/30 rounded-2xl w-full max-w-xl p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-white/10">
-              <div className="flex items-center gap-2">
-                <FileText className="w-5 h-5 text-cyan-400" />
-                <h3 className="text-sm font-bold text-white font-['Outfit']">
-                  Citation [{activeCitationModal.citation_id}] Ground-Truth Excerpt
-                </h3>
+/* ── Source Panel ─────────────────────────────────────────── */
+
+function SourcePanel({ cite, onClose }) {
+  return (
+    <aside className="srcpanel">
+      <div className="srcpanel-head">
+        <div style={{ overflow: 'hidden' }}>
+          <div className="srcpanel-title">{cite.filename}</div>
+          {locLabel(cite) && <div className="srcpanel-loc">{locLabel(cite)}</div>}
+        </div>
+        <button className="srcpanel-close" onClick={onClose}><X size={16}/></button>
+      </div>
+      <div className="srcpanel-body">
+        {cite.modality === 'image' && <img className="srcpanel-img" src={`${API}/source/${cite.source_id}/file`} alt={cite.filename}/>}
+        {cite.modality === 'audio' && <audio style={{ width: '100%', marginBottom: 12 }} controls src={`${API}/source/${cite.source_id}/file`}/>}
+        {cite.excerpt && <div className="srcpanel-excerpt" style={{ marginTop: cite.modality !== 'text' ? 14 : 0 }}>{cite.excerpt}</div>}
+        <div style={{ marginTop: 16 }}>
+          <a href={`${API}/source/${cite.source_id}/file`} target="_blank" rel="noreferrer" className="btn-outline"><ArrowUpRight size={13}/>Open original</a>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+/* ── Sources Page ────────────────────────────────────────── */
+
+function SourcesPage({ sources, filter, setFilter, fetchSources }) {
+  const ref = useRef(null);
+  const [ing, setIng] = useState(false);
+
+  const ingest = async (e) => {
+    const fs = Array.from(e.target.files);
+    if (!fs.length) return;
+    setIng(true);
+    const fd = new FormData();
+    fs.forEach(f => fd.append('files', f));
+    try { await fetch(`${API}/ingest`, { method: 'POST', body: fd }); await fetchSources(); } catch {}
+    setIng(false);
+    e.target.value = '';
+  };
+
+  const filtered = sources.filter(s => s.filename.toLowerCase().includes(filter.toLowerCase()));
+
+  return (
+    <div className="page-sources">
+      <div className="page-head">
+        <h1 className="page-title">Sources</h1>
+        <input ref={ref} type="file" multiple onChange={ingest} style={{ display: 'none' }} accept=".pdf,.doc,.docx,.txt,.csv,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.tif,.wav,.mp3,.m4a,.flac,.ogg"/>
+        <button className="btn-primary" onClick={() => ref.current?.click()}><Plus size={14}/>Add files</button>
+      </div>
+
+      {ing && <div className="ingest-bar" style={{ marginLeft: 0, marginBottom: 12 }}><div className="ingest-spinner"/>Processing files…</div>}
+
+      <input className="search-input" placeholder="Search sources…" value={filter} onChange={e => setFilter(e.target.value)}/>
+
+      {filtered.length === 0 ? (
+        <div className="empty">
+          <FolderOpen size={40} className="empty-icon"/>
+          <div className="empty-text">{sources.length === 0 ? 'No files indexed yet. Upload documents to get started.' : 'No sources match your search.'}</div>
+        </div>
+      ) : (
+        <div className="src-list">
+          {filtered.map((s, i) => {
+            const Ic = fIcon(s.filename);
+            return (
+              <div key={i} className="src-row">
+                <div className="src-icon"><Ic size={16}/></div>
+                <div className="src-info">
+                  <div className="src-name">{s.filename}</div>
+                  <div className="src-meta"><span>{s.source_type?.toUpperCase()}</span>{s.file_size && <span>{fSize(s.file_size)}</span>}</div>
+                </div>
+                <span className="src-status">Indexed</span>
+                <a href={`${API}/source/${s.source_id}/file`} target="_blank" rel="noreferrer" className="src-dl" title="Open"><ArrowUpRight size={14}/></a>
               </div>
-              <button
-                onClick={() => setActiveCitationModal(null)}
-                className="p-1 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-slate-400">File:</span>
-                <span className="font-semibold text-slate-200">{activeCitationModal.filename}</span>
-                {activeCitationModal.location?.page_number && (
-                  <span className="px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-mono text-[11px]">
-                    Page {activeCitationModal.location.page_number}
-                  </span>
-                )}
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-black/40 border border-white/10 text-xs text-slate-200 leading-relaxed font-sans">
-                {activeCitationModal.excerpt}
-              </div>
-            </div>
-
-            <div className="pt-2 flex justify-end">
-              <button
-                onClick={() => setActiveCitationModal(null)}
-                className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-semibold text-xs transition"
-              >
-                Done
-              </button>
-            </div>
-          </div>
+            );
+          })}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── Settings Page ───────────────────────────────────────── */
+
+function SettingsPage({ backend, setBackend, topK, setTopK, rerankK, setRerankK, health, fetchHealth }) {
+  const ready = health?.inference?.ready;
+  return (
+    <div className="page-settings">
+      <h1 className="page-title" style={{ marginBottom: 28 }}>Settings</h1>
+
+      <div className="set-section">
+        <div className="set-section-title">AI Model</div>
+        <div className="set-row">
+          <div><div className="set-label">Inference backend</div><div className="set-desc">Local Ollama or cloud API</div></div>
+          <select className="set-select" value={backend} onChange={e => { setBackend(e.target.value); setTimeout(fetchHealth, 500); }}>
+            <option value="offline">Offline (Ollama)</option>
+            <option value="online">Online (Cloud API)</option>
+          </select>
+        </div>
+        <div className="set-row">
+          <div><div className="set-label">Status</div><div className="set-desc">{health?.inference?.message || ''}</div></div>
+          <div className="set-status" style={{ color: ready ? 'var(--green)' : 'var(--red)' }}>
+            <span className="set-dot" style={{ background: ready ? 'var(--green)' : 'var(--red)' }}/>
+            {ready ? 'Ready' : 'Not ready'}
+          </div>
+        </div>
+        {health?.inference?.model && (
+          <div className="set-row">
+            <div className="set-label">Model</div>
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{health.inference.model}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="set-section">
+        <div className="set-section-title">Retrieval</div>
+        <div className="set-row">
+          <div><div className="set-label">Retrieve top K</div><div className="set-desc">Chunks to retrieve from the index</div></div>
+          <input className="set-num" type="number" min={1} max={50} value={topK} onChange={e => setTopK(+e.target.value)}/>
+        </div>
+        <div className="set-row">
+          <div><div className="set-label">Rerank top K</div><div className="set-desc">Chunks after cross-encoder reranking</div></div>
+          <input className="set-num" type="number" min={1} max={25} value={rerankK} onChange={e => setRerankK(+e.target.value)}/>
+        </div>
+      </div>
+
+      <div className="set-section">
+        <div className="set-section-title">System</div>
+        {health?.models && (
+          <>
+            <div className="set-row"><div className="set-label">Embedding</div><span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{health.models.embedding}</span></div>
+            <div className="set-row"><div className="set-label">Reranker</div><span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{health.models.reranker}</span></div>
+            <div className="set-row"><div className="set-label">Whisper</div><span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{health.models.whisper}</span></div>
+          </>
+        )}
+        <div className="set-row">
+          <div className="set-label">Tesseract OCR</div>
+          <div className="set-status" style={{ color: health?.tesseract?.available ? 'var(--green)' : 'var(--red)' }}>
+            <span className="set-dot" style={{ background: health?.tesseract?.available ? 'var(--green)' : 'var(--red)' }}/>
+            {health?.tesseract?.available ? 'Available' : 'Missing'}
+          </div>
+        </div>
+        {health?.index && (
+          <div className="set-row">
+            <div className="set-label">Index</div>
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{health.index.sources} sources · {health.index.items} items</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
